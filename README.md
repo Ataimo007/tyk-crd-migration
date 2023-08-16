@@ -54,11 +54,11 @@ crd-migration COMMAND -flags [OPTIONs]*
 
  Below are the available commands:
 
-  migrate ................ The Namespace in the Sourc KubeConfig that Contains the CRDs you want to Migrate
-  cutover ................ The Name of the KubeConfig for the Source Kubernetes Cluster
-  cleanup ................ The Name of the KubeConfig for the Destination Kubernetes Cluster
-  rollback ............... The Name of the Operator Context in the Destination Kubernetes Cluster for deploying the CRDs
-  operator-startup ....... The Name of the Operator Context in the Destination Kubernetes Cluster for deploying the CRDs
+  migrate: The Namespace in the Sourc KubeConfig that Contains the CRDs you want to Migrate
+  cutover: The Name of the KubeConfig for the Source Kubernetes Cluster
+  cleanup: The Name of the KubeConfig for the Destination Kubernetes Cluster
+  rollback: The Name of the Operator Context in the Destination Kubernetes Cluster for deploying the CRDs
+  operator-startup: The Name of the Operator Context in the Destination Kubernetes Cluster for deploying the CRDs
 
 ### migrate
 
@@ -74,10 +74,10 @@ crd-migration migrate -n NAMESPACE [ -s SOURCE_KUBECONFIG ] -d DESTINATION_KUBEC
 
 Below are the available flags
 
-  -n : NAMESPACE ................... The Namespace in the Sourc KubeConfig that Contains the CRDs you want to Migrate
-  -s : SOURCE_KUBECONFIG ........... The Name of the KubeConfig for the Source Kubernetes Cluster. If not specified, defaults to the Current KubeConfig Context
-  -d : DESTINATION_KUBECONFIG ...... The Name of the KubeConfig for the Destination Kubernetes Cluster
-  -o : OPERATOR_CONTEXT ............ The Name of the Operator Context in the Destination Kubernetes Cluster for deploying the CRDs
+  -n : NAMESPACE: The Namespace in the Sourc KubeConfig that Contains the CRDs you want to Migrate
+  -s : SOURCE_KUBECONFIG: The Name of the KubeConfig for the Source Kubernetes Cluster. If not specified, defaults to the Current KubeConfig Context
+  -d : DESTINATION_KUBECONFIG: The Name of the KubeConfig for the Destination Kubernetes Cluster
+  -o : OPERATOR_CONTEXT: The Name of the Operator Context in the Destination Kubernetes Cluster for deploying the CRDs
 
 ### cutover
 
@@ -93,8 +93,8 @@ crd-migration cutover -n NAMESPACE [ -s SOURCE_KUBECONFIG ]
 
 Below are the available flags
 
-  -n : NAMESPACE ................... The Namespace in the Sourc KubeConfig that Contains the CRDs you want to Migrate
-  -s : SOURCE_KUBECONFIG ........... The Name of the KubeConfig for the Source Kubernetes Cluster. If not specified, defaults to the Current KubeConfig Context
+  -n : NAMESPACE: The Namespace in the Sourc KubeConfig that Contains the CRDs you want to Migrate
+  -s : SOURCE_KUBECONFIG: The Name of the KubeConfig for the Source Kubernetes Cluster. If not specified, defaults to the Current KubeConfig Context
 
 ### cleanup
 
@@ -110,8 +110,8 @@ crd-migration cleanup -n NAMESPACE [ -s SOURCE_KUBECONFIG ]
 
 Below are the available flags
 
-  -n : NAMESPACE ................... The Namespace in the Sourc KubeConfig that Contains the CRDs you want to Migrate
-  -s : SOURCE_KUBECONFIG ........... The Name of the KubeConfig for the Source Kubernetes Cluster. If not specified, defaults to the Current KubeConfig Context
+  -n : NAMESPACE: The Namespace in the Sourc KubeConfig that Contains the CRDs you want to Migrate
+  -s : SOURCE_KUBECONFIG: The Name of the KubeConfig for the Source Kubernetes Cluster. If not specified, defaults to the Current KubeConfig Context
 
 ### rollback (Not Yet Implemented)
 
@@ -127,9 +127,9 @@ crd-migration rollback -n NAMESPACE [ -s SOURCE_KUBECONFIG ]
 
 Below are the available flags
 
-  -n : NAMESPACE ................... The Namespace in the Sourc KubeConfig that Contains the CRDs you want to Migrate
-  -s : SOURCE_KUBECONFIG ........... The Name of the KubeConfig for the Source Kubernetes Cluster. If not specified, defaults to the Current KubeConfig Context
-  -d : DESTINATION_KUBECONFIG ...... The Name of the KubeConfig for the Destination Kubernetes Cluster
+  -n : NAMESPACE: The Namespace in the Sourc KubeConfig that Contains the CRDs you want to Migrate
+  -s : SOURCE_KUBECONFIG: The Name of the KubeConfig for the Source Kubernetes Cluster. If not specified, defaults to the Current KubeConfig Context
+  -d : DESTINATION_KUBECONFIG: The Name of the KubeConfig for the Destination Kubernetes Cluster
 
 ### statup-operator (Not Yet Implemented)
 
@@ -145,4 +145,4 @@ crd-migration statup-operator -n NAMESPACE [ -s SOURCE_KUBECONFIG ]
 
 Below are the available flags
 
-  -s : SOURCE_KUBECONFIG ........... The Name of the KubeConfig for the Source Kubernetes Cluster. If not specified, defaults to the Current KubeConfig Context
+  -s : SOURCE_KUBECONFIG: The Name of the KubeConfig for the Source Kubernetes Cluster. If not specified, defaults to the Current KubeConfig Context
