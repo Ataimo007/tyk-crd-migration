@@ -295,13 +295,26 @@ scan_namespace() {
 find_k8s_object() {
   k8s_object=""
   while read -r line; do
-    if [[ $line == *"$2"* ]]; then
+    name="$(echo "$line" | awk '{print $1}')"
+    # if [[ $line == *"$2"* ]]; then
+    if [[ $name == "$2" ]]; then
       k8s_object="$(echo "$line" | awk '{print $2}')"
       echo "$k8s_object"
       return
     fi
-  done <<<"$(kubectl get "$1" -A -o=custom-columns='name:.metadata.name,namespace:.metadata.namespace' --context "$current_context")"
+  done <<<"$(kubectl get "$1" -A -o=custom-columns='name:.metadata.name,namespace:.metadata.namespace' --no-headers --context "$current_context")"
   echo "$k8s_object"
+}
+
+verify_k8s_object() {
+  while read -r line; do
+    name="$(echo "$line" | awk '{print $1}')"
+    if [[ $name == "$2" ]]; then
+      echo 1
+      return
+    fi
+  done <<<"$(kubectl get "$1" -n "$3" -o=custom-columns='name:.metadata.name,namespace:.metadata.namespace' --no-headers --context "$current_context")"
+  echo 0
 }
 
 find_source_operator() {
@@ -362,24 +375,54 @@ validate_source_context() {
 }
 
 find_operatorcontext() {
-  namespace=$(find_k8s_object "operatorcontext" "$1")
-  if [ "$namespace" != "" ]; then
-    operatorcontext=$1
+  if [[ $1 == *"/"* ]] 
+  then
+    ns="$(echo "$1" | awk -F / '{print $1}')"
+    oc="$(echo "$1" | awk -F / '{print $2}')"
+    echo "Verifying if the Destination Opertor Context $oc exist in the Namespace $ns"
+    if [ "$(verify_k8s_object "operatorcontext" "$oc" "$ns")" ] 
+    then
+      namespace=$ns
+      context=$oc
+    fi
+  else
+    echo "Finding the Namespace for the Destination Opertor Context $1"
+    namespace=$(find_k8s_object "operatorcontext" "$1")
+    context=$1
+  fi
+  
+  if [[ "$namespace" != "" && "$context" != "" ]]; then
+    operatorcontext=$context
     operatorcontext_namespace=$namespace
     echo "Destination Operator Context $operatorcontext exists in the Kubernetes Context $(get_kubeconfig) (deployment.apps/tyk-operator-controller-manager)"
   else
-    echo "Destination Operator Context $1 wasn't found in Current Kubernetes Context $(get_kubeconfig) (deployment.apps/tyk-operator-controller-manager)"
+    echo "Destination Operator Context $context wasn't found in Current Kubernetes Context $(get_kubeconfig) (deployment.apps/tyk-operator-controller-manager)"
   fi
 }
 
 find_source_operatorcontext() {
-  namespace=$(find_k8s_object "operatorcontext" "$1")
-  if [ "$namespace" != "" ]; then
-    source_operatorcontext=$1
+  if [[ $1 == */* ]] 
+  then
+    ns="$(echo "$1" | awk -F / '{print $1}')"
+    oc="$(echo "$1" | awk -F / '{print $2}')"
+    echo "Verifying if the Source Opertor Context $oc exist in the Namespace $ns"
+    if [ "$(verify_k8s_object "operatorcontext" "$oc" "$ns")" ] 
+    then
+      namespace=$ns
+      context=$oc
+    fi
+  else
+    echo "Finding the Namespace for the Source Opertor Context $1"
+    namespace=$(find_k8s_object "operatorcontext" "$1")
+    context=$1
+  fi
+  
+  if [[ "$namespace" != "" && "$context" != "" ]]; then
+    source_operatorcontext=$context
     source_operatorcontext_namespace=$namespace
     echo "Source Operator Context $source_operatorcontext in Namespace $source_operatorcontext_namespace of the Kubernetes Context $(get_kubeconfig) (deployment.apps/tyk-operator-controller-manager)"
   else
-    echo "Source Operator Context $1 wasn't found in Current Kubernetes Context $(get_kubeconfig) (deployment.apps/tyk-operator-controller-manager)"
+    echo "Source Operator Context $context wasn't found in Current Kubernetes Context $(get_kubeconfig) (deployment.apps/tyk-operator-controller-manager)"
   fi
 }
 
@@ -592,6 +635,22 @@ source_prerequisites() {
   validate_source_context "$1" "$3"
 }
 
+dependencies() {
+  if ! version=$(kubectl version 2>&1); then
+    echo "Kubectl Is not Installed on the Machine. Its required to run the Migration Tooling. More information at https://kubernetes.io/docs/tasks/tools/#kubectl" >&2
+    echo "Aborting Operation"
+    exit 1
+  fi
+
+  if ! version=$(yq -V 2>&1); then
+    echo "yq Is not Installed on the Machine. Its required to run the Migration Tooling. More information at https://github.com/mikefarah/yq" >&2
+    echo "Aborting Operation"
+    exit 1
+  fi
+
+  echo 'The Required Dependecies are Available. Begin Process...'
+}
+
 # prerequisites "$n" "$k1" "$k2" "$o1" "$o2"
 
 prerequisites() {
@@ -651,6 +710,7 @@ check_kubeconfig() {
 # migrate "$n" "$k1" "$k2" "$o1" "$o2"
 
 migrate() {
+  dependencies
   echo "Migrating CRDs"
 
   prerequisites "$1" "$2" "$3" "$4" "$5"
@@ -677,6 +737,7 @@ migrate() {
 }
 
 cutover() {
+  dependencies
   echo "Cutting Over Source of Truth away from Source Kubernetes Context"
 
   source_prerequisites "$1" "$2"
@@ -693,10 +754,12 @@ cutover() {
 }
 
 rollback() {
+  dependencies
   echo "The Rollback Command is yet to be Implemented"
 }
 
 startup-operator() {
+  dependencies
   echo "The Startup Operator is yet to be Implemented"
 }
 
@@ -704,6 +767,7 @@ startup-operator() {
 # cleanup "$n" "$k1" "$o1" "$b"
 
 cleanup() {
+  dependencies
   echo "Cleaning Up CRDs"
 
   source_prerequisites "$1" "$2" "$3"
@@ -751,7 +815,7 @@ Description:
 The statup-operator command is a Utility Command used to restore your Tyk Operator to the Right State in the situation where the Migration doesn't complete successfully
 
 Usage: 
-crd-migration statup-operator -n NAMESPACE [ -s SOURCE_KUBECONFIG ]
+crd-migration statup-operator [ -s SOURCE_KUBECONFIG ]
 
 Flags:
 Below are the available flags
@@ -771,7 +835,7 @@ Description:
 The rollback command is used to clean up the last migration attempt and restore your CRDs to the last known state.
 
 Usage: 
-crd-migration rollback -n NAMESPACE [ -s SOURCE_KUBECONFIG ]
+crd-migration rollback -n NAMESPACE [ -k SOURCE_KUBECONFIG DESTINATION_KUBECONFIG ] [ -o <NAMESPACE>/SOURCE_KUBECONFIG ] [ -b ]
 
 Flags:
 Below are the available flags
@@ -791,10 +855,10 @@ Command:
 cleanup (Shared and Isolated Dashboard)
 
 Description:
-The cleanup is a follow up command executed after the cutover command used to restore the Source Cluster to the Previous state and Clean up the migrated CRDs, Backup and Operation Files. After this command is executed, you can't rollback.
+The cleanup command is used to delete CRDs from a namespace. This command can be executed after a successful Migration of your CRDs and if you no longer need the previous CRDs again.
 
 Usage: 
-crd-migration cleanup -n NAMESPACE [ -s SOURCE_KUBECONFIG ]
+crd-migration cleanup -n NAMESPACE [ -k SOURCE_KUBECONFIG ] [ -o <NAMESPACE>/SOURCE_KUBECONFIG ] [ -b ]
 
 Flags:
 Below are the available flags
@@ -803,7 +867,11 @@ Below are the available flags
   -k : KUBECONFIG .................. The Name of the KubeConfig Context for the Kubernetes Cluster to Clean Up. For example -k context. The Current KubeConfig Context will be consider if not specified
   -o : OPERATOR_CONTEXT ............ The Name of the Tyk Operator Context that should be consider while Cleaning Up. For example -o operator-context. If not specified, all Tyk's CRDs will be considered for cleanup.
   -b : BACKUP ...................... Flag used to only Clean Up CRDs that are Backed Up. The defualt directory is considered if no Directory is specified.
-  
+
+Examples:
+./crd-migration.sh cleanup -n dev -k tyk2 -o prod -b
+./crd-migration.sh cleanup -n dev -k tyk -o dev/dev -b
+
 EOF
 }
 
@@ -817,13 +885,13 @@ Description:
 The cutover is a follow up command executed after the migrate command used to limit the Source of Truth to only the Destination Cluster, invalidating that of the Source Cluster. This command also leaves your Cluster in an intermediate start, and so should be followed up with the Cleanup or Rollback Command.
 
 Usage: 
-crd-migration cutover -n NAMESPACE [ -s SOURCE_KUBECONFIG ]
+crd-migration cutover -n NAMESPACE [ -k SOURCE_KUBECONFIG ] [ -o <NAMESPACE>/SOURCE_KUBECONFIG ] [ -b ]
 
 Flags:
 Below are the available flags
 
   -n : NAMESPACE ................... The Namespace in the Source Kubernetes Cluster that Contains the CRDs you want to cutover
-  -k : SOURCE_KUBECONFIG ........... The Name of the KubeConfig Context for the Source Kubernetes Cluster to Cut Over. For example -k context. The Current KubeConfig Context will be consider if not specified
+  -k : KUBECONFIG .................. The Name of the KubeConfig Context for the Kubernetes Cluster to Clean Up. For example -k context. The Current KubeConfig Context will be consider if not specified
   -o : OPERATOR_CONTEXT ............ The Name of the Tyk Operator Context that should be consider while Cutting Over. For example -o operator-context. If not specified, all Tyk's CRDs will be considered for cutover.
   -b : BACKUP ...................... Flag used to only Cut Over CRDs that are Backed Up. The defualt directory is considered if no Directory is specified.
   
@@ -840,14 +908,18 @@ Description:
 The migrate command is used to automate the transfer of CRDs ( APIs, Policies, etc ) from the Source Kubernetes Cluster to the Destinaion Kubernetes Cluster.
 
 Usage: 
-crd-migration migrate -n NAMESPACE [ -k SOURCE_KUBECONFIG DESTINATION_KUBECONFIG ] [ -o SOURCE_OPERATOR_CONTEXT DESTINATION_OPERATOR_CONTEXT ]
+crd-migration migrate -n NAMESPACE [ -k SOURCE_KUBECONFIG DESTINATION_KUBECONFIG ] [ -o <NAMESPACE>/SOURCE_OPERATOR_CONTEXT <NAMESPACE>/DESTINATION_OPERATOR_CONTEXT ]
 
 Flags:
 Below are the available flags
 
   -n : NAMESPACE ............. The Namespace in the Source Kubernetes Cluster that Contains the CRDs you want to Migrate
   -k : KUBECONFIGs ........... The Names of the KubeConfig Context for the Source and Destination Kubernetes Cluster, delimited by space. For example -k source-context destination-context. You can use - to specify the current KubeConfig Context.
-  -o : OPERATOR_CONTEXTs ..... The Names of the Tyk Operator Context for the Source and Destination Kubernetes Cluster of the CRDs. For example -o source-operator-context1 destination-operator-context2. You can use - as the source operator Context if you don't want it to be taken into account.
+  -o : OPERATOR_CONTEXTs ..... The Names and Namespaces of the Tyk Operator Context for the Source and Destination Kubernetes Cluster of the CRDs, delimited by space. For example -o namespace/source-operator-context1 namespace/destination-operator-context2 or -o source-operator-context1 destination-operator-context2 if you want the script to auto lookup the operator namespace. You can use - as the source operator Context if you don't want it to be taken into account.
+
+Examples:
+./crd-migration.sh migrate -n dev -k tyk tyk2 -o dev prod
+./crd-migration.sh migrate -n dev -k tyk tyk2 -o dev/dev tyk/prod
 
 EOF
 }
@@ -867,8 +939,8 @@ Cmmands:
  Below are the available commands:
 
   migrate .......................... The Namespace in the Sourc KubeConfig that Contains the CRDs you want to Migrate
-  cutover (In Progress) ............ The Name of the KubeConfig for the Source Kubernetes Cluster
   cleanup .......................... The Name of the KubeConfig for the Destination Kubernetes Cluster
+  cutover (In Progress) ............ The Name of the KubeConfig for the Source Kubernetes Cluster
   rollback (In Progress) ........... The Name of the Operator Context in the Destination Kubernetes Cluster for deploying the CRDs
   operator-startup (In Progress) ... The Name of the Operator Context in the Destination Kubernetes Cluster for deploying the CRDs
 
@@ -914,21 +986,6 @@ start() {
   execute "get nodes"
   execute "get ${a} -n ${b} -o=custom-columns='name:.metadata.name,context-name:.spec.contextRef.name,context-namespace:.spec.contextRef.namespace'"
 }
-
-# s="-s"
-# r="a-zA-Z"
-# echo "The String is $s"
-# if ! [[ $s =~ -[a-zA-Z]{1}$ ]]
-# then
-#   echo "Matched"
-# else
-#   echo "No Match"
-# fi
-
-# exit
-
-# report_migration
-# exit
 
 # start
 # exit
@@ -1092,3 +1149,12 @@ esac
 # ./crd-migration.sh migrate -n dev -k tyk tyk2 -o dev prod
 # ./crd-migration.sh cleanup -n dev -k tyk2 -o prod -b
 # ./crd-migration.sh cleanup -n dev -k tyk -o dev -b 
+
+# echo "Action $action"
+# echo "Namespace $n"
+# echo "Kube Configs $k1 and $k2"
+# echo "Operator Context $o1 and $o2"
+# o="$(echo "$o2" | awk -F / '{print $1}')"
+# on="$(echo "$o2" | awk -F / '{print $2}')"
+# echo "Destination Operator Context $o and Namespace $on"
+# echo "Backup Directory $b"
