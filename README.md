@@ -5,6 +5,7 @@ The Tyk CRD Migration Tooling is used for automating the migration of CRDs ( API
 ## Prequisites
 - [kubectl](https://kubernetes.io/docs/tasks/tools/#kubectl)
 - [yq](https://github.com/mikefarah/yq)
+- [git](https://github.com/git-guides/install-git) (For Retrieving the Migration Script)
 
 # Migration Scenerios
 
@@ -18,16 +19,16 @@ Initial steps:
 
 1. Check if you have a configuration context for each of your Kubernetes Clusters
 
-    > kubectl config get-contexts
+        > kubectl config get-contexts
 
-    CURRENT   NAME   CLUSTER   AUTHINFO               NAMESPACE
-              tyk    tyk       clusterUser_tyk_tyk    
-              tyk2   tyk2      clusterUser_tyk_tyk2   
+        CURRENT   NAME   CLUSTER   AUTHINFO               NAMESPACE
+                  tyk    tyk       clusterUser_tyk_tyk    
+                  tyk2   tyk2      clusterUser_tyk_tyk2   
 
-2. You can initialise a Kubeconfig for your Kubernetes Clusters, but this will vary depending on your Kubernetes Provider. For this example we are making use of Azure Kubernetes Service, but this will differ for Cloud Providers like AWS or local Providers like minikube.
+2. You can initialise a Kubeconfig for your Kubernetes Clusters, but this will vary depending on your Kubernetes Provider. For this example we are making use of Azure Kubernetes Service, but this will differ for Cloud Providers like [AWS](https://docs.aws.amazon.com/eks/latest/userguide/create-kubeconfig.html#create-kubeconfig-automatically) or local Providers like [minikube](https://minikube.sigs.k8s.io/docs/faq/#how-can-i-create-more-than-one-cluster-with-minikube).
 
-    > az aks get-credentials --resource-group myResourceGroup --name myAKSCluster1
-    > az aks get-credentials --resource-group myResourceGroup --name myAKSCluster2
+        > az aks get-credentials --resource-group myResourceGroup --name myAKSCluster1
+        > az aks get-credentials --resource-group myResourceGroup --name myAKSCluster2
 
 Next will be to run the migration tooling. Below are the CRDs we want to migrate in a specific Namespace with it's associated Tyk Operator Context (i.e. which Tyk Dashboard the operation is executed against for a given resource):
 
@@ -104,7 +105,7 @@ Check and Validate the existence of the migrated CRDs in the new Cluster
 
 Migration Complete!
 
-##Cleanup
+## Cleanup
 
 You can Clean up the CRDs in the New Cluster if you want to Test the Migration again, or in the Old Cluster if you are done validating the new CRDs and you are satisfy with the Migration.
 
@@ -131,7 +132,7 @@ Clean Up New Cluster
     Clean Up Complete
 
 
-#Roadmap
+# Roadmap
 
 ## *Migrating CRDS across Kubernetes Clusters with a Shared Tyk Dashboard (In Progress)*
 

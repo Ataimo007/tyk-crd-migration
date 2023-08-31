@@ -993,7 +993,6 @@ start() {
 
 action="$1"
 shift
-# flags="a-zA-Z"
 
 i=2
 
@@ -1149,12 +1148,3 @@ esac
 # ./crd-migration.sh migrate -n dev -k tyk tyk2 -o dev prod
 # ./crd-migration.sh cleanup -n dev -k tyk2 -o prod -b
 # ./crd-migration.sh cleanup -n dev -k tyk -o dev -b 
-
-# echo "Action $action"
-# echo "Namespace $n"
-# echo "Kube Configs $k1 and $k2"
-# echo "Operator Context $o1 and $o2"
-# o="$(echo "$o2" | awk -F / '{print $1}')"
-# on="$(echo "$o2" | awk -F / '{print $2}')"
-# echo "Destination Operator Context $o and Namespace $on"
-# echo "Backup Directory $b"
