@@ -38,38 +38,48 @@ get_destination_webhook_dir() {
   echo "$dir"
 }
 
-get_api_backup_dir() {
-  dir="$backup_directory""$source_namespace"/api
-  [ ! -d "$dir" ] && mkdir -p "$dir"
-  echo "$dir"
-}
-
 get_backup_dir() {
-  dir="$backup_directory""$source_namespace"/
+  if [[ $source_operatorcontext != "" && $source_operatorcontext_namespace != "" ]]; then
+    dir="$backup_directory""$source_namespace"/"$source_operatorcontext"/
+  else
+    dir="$backup_directory""$source_namespace"/
+  fi
+
   [ ! -d "$dir" ] && mkdir -p "$dir"
   echo "$dir"
 }
 
-get_live_dir() {
-  dir="$live_directory""$source_namespace"/
-  [ ! -d "$dir" ] && mkdir -p "$dir"
-  echo "$dir"
-}
-
-get_api_live_dir() {
-  dir="$live_directory""$source_namespace"/api
+get_api_backup_dir() {
+  dir="$(get_backup_dir)"api
   [ ! -d "$dir" ] && mkdir -p "$dir"
   echo "$dir"
 }
 
 get_policy_backup_dir() {
-  dir="$backup_directory""$source_namespace"/policy
+  dir="$(get_backup_dir)"policy
+  [ ! -d "$dir" ] && mkdir -p "$dir"
+  echo "$dir"
+}
+
+get_live_dir() {
+  if [[ $source_operatorcontext != "" && $source_operatorcontext_namespace != "" ]]; then
+    dir="$live_directory""$source_namespace"/"$source_operatorcontext"/
+  else
+    dir="$live_directory""$source_namespace"/
+  fi
+
+  [ ! -d "$dir" ] && mkdir -p "$dir"
+  echo "$dir"
+}
+
+get_api_live_dir() {
+  dir="$(get_live_dir)"api
   [ ! -d "$dir" ] && mkdir -p "$dir"
   echo "$dir"
 }
 
 get_policy_live_dir() {
-  dir="$live_directory""$source_namespace"/policy
+  dir="$(get_live_dir)"policy
   [ ! -d "$dir" ] && mkdir -p "$dir"
   echo "$dir"
 }
@@ -80,6 +90,15 @@ restore() {
 
   for file in $files; do
     crd=$(cat "$1"/"$file")
+
+    if [[ $source_operatorcontext != "" && $source_operatorcontext_namespace != "" ]]; then
+      crd_context_name=$(echo "$crd" | yq '.spec.contextRef.name' -)
+      crd_context_namespace=$(echo "$crd" | yq '.spec.contextRef.namespace' -)
+
+      if ! [[ $source_operatorcontext == "$crd_context_name" && $source_operatorcontext_namespace == "$crd_context_namespace" ]]; then
+        continue
+      fi
+    fi
 
     if [ "$3" == "tykapis" ]; then
       crd=$(indemnify_api "$crd")
@@ -98,25 +117,6 @@ restore() {
 
   report "migrate" "$3" "$i"
 }
-
-# clean "$(get_policy_backup_dir)" "tykpolicies"
-
-# clean_crd() {
-#   cleaned=0
-
-#   if [[ $1 != "" ]]; then
-#     if [[ -f "${3}"/"${2}".yaml ]]; then
-#       delete_k8s_object "$2" "$1" "$source_namespace"
-#       cleaned=1
-#     fi
-#   else
-#     delete_k8s_object "$2" "$1" "$source_namespace"
-#     echo "Deleted the $(friendly_name "$2") $1 from the $source_namespace Namespace"
-#     cleaned=1
-#   fi
-
-#   echo $cleaned
-# }
 
 clean() {
   i=0
@@ -160,7 +160,7 @@ clean() {
         fi
 
       fi
-    done <<<"$(kubectl get "$1" -n "$source_namespace" -o=custom-columns='name:.metadata.name,context-name:.spec.contextRef.name,context-namespace:.spec.contextRef.namespace' --no-headers  --context "$current_context")"
+    done <<<"$(kubectl get "$1" -n "$source_namespace" -o=custom-columns='name:.metadata.name,context-name:.spec.contextRef.name,context-namespace:.spec.contextRef.namespace' --no-headers --context "$current_context")"
   fi
 
   report "cleanup" "$1" "$i"
@@ -173,7 +173,7 @@ backup() {
     for name in $(kubectl get "$1" -n "$source_namespace" -o name --context "$current_context"); do
       name="${name##*/}"
       kubectl get "${1}" "${name}" -n "$source_namespace" -o yaml --context "$current_context" >"${2}"/"${name}".yaml
-      echo "Backed Up $(friendly_name) $name"
+      echo "Backed Up $(friendly_name "$1") $name"
       i=$((i + 1))
     done
   else
@@ -185,7 +185,7 @@ backup() {
 
       if [[ $context_name == "$source_operatorcontext" && $context_namespace == "$source_operatorcontext_namespace" ]]; then
         kubectl get "${1}" "${name}" -n "$source_namespace" -o yaml --context "$current_context" >"${2}"/"${name}".yaml
-        echo "Backed Up $(friendly_name) $name"
+        echo "Backed Up $(friendly_name "$1") $name"
         i=$((i + 1))
       fi
     done <<<"$(kubectl get "$1" -n "$source_namespace" -o=custom-columns='name:.metadata.name,context-name:.spec.contextRef.name,context-namespace:.spec.contextRef.namespace' --no-headers --context "$current_context")"
@@ -375,13 +375,11 @@ validate_source_context() {
 }
 
 find_operatorcontext() {
-  if [[ $1 == *"/"* ]] 
-  then
+  if [[ $1 == *"/"* ]]; then
     ns="$(echo "$1" | awk -F / '{print $1}')"
     oc="$(echo "$1" | awk -F / '{print $2}')"
     echo "Verifying if the Destination Opertor Context $oc exist in the Namespace $ns"
-    if [ "$(verify_k8s_object "operatorcontext" "$oc" "$ns")" ] 
-    then
+    if [ "$(verify_k8s_object "operatorcontext" "$oc" "$ns")" ]; then
       namespace=$ns
       context=$oc
     fi
@@ -390,7 +388,7 @@ find_operatorcontext() {
     namespace=$(find_k8s_object "operatorcontext" "$1")
     context=$1
   fi
-  
+
   if [[ "$namespace" != "" && "$context" != "" ]]; then
     operatorcontext=$context
     operatorcontext_namespace=$namespace
@@ -401,13 +399,11 @@ find_operatorcontext() {
 }
 
 find_source_operatorcontext() {
-  if [[ $1 == */* ]] 
-  then
+  if [[ $1 == */* ]]; then
     ns="$(echo "$1" | awk -F / '{print $1}')"
     oc="$(echo "$1" | awk -F / '{print $2}')"
     echo "Verifying if the Source Opertor Context $oc exist in the Namespace $ns"
-    if [ "$(verify_k8s_object "operatorcontext" "$oc" "$ns")" ] 
-    then
+    if [ "$(verify_k8s_object "operatorcontext" "$oc" "$ns")" ]; then
       namespace=$ns
       context=$oc
     fi
@@ -416,7 +412,7 @@ find_source_operatorcontext() {
     namespace=$(find_k8s_object "operatorcontext" "$1")
     context=$1
   fi
-  
+
   if [[ "$namespace" != "" && "$context" != "" ]]; then
     source_operatorcontext=$context
     source_operatorcontext_namespace=$namespace
@@ -990,7 +986,6 @@ start() {
 # start
 # exit
 
-
 action="$1"
 shift
 
@@ -1147,4 +1142,17 @@ esac
 
 # ./crd-migration.sh migrate -n dev -k tyk tyk2 -o dev prod
 # ./crd-migration.sh cleanup -n dev -k tyk2 -o prod -b
+<<<<<<< Updated upstream
 # ./crd-migration.sh cleanup -n dev -k tyk -o dev -b 
+=======
+# ./crd-migration.sh cleanup -n dev -k tyk -o dev -b
+
+# echo "Action $action"
+# echo "Namespace $n"
+# echo "Kube Configs $k1 and $k2"
+# echo "Operator Context $o1 and $o2"
+# o="$(echo "$o2" | awk -F / '{print $1}')"
+# on="$(echo "$o2" | awk -F / '{print $2}')"
+# echo "Destination Operator Context $o and Namespace $on"
+# echo "Backup Directory $b"
+>>>>>>> Stashed changes
