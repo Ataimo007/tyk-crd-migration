@@ -1142,9 +1142,6 @@ esac
 
 # ./crd-migration.sh migrate -n dev -k tyk tyk2 -o dev prod
 # ./crd-migration.sh cleanup -n dev -k tyk2 -o prod -b
-<<<<<<< Updated upstream
-# ./crd-migration.sh cleanup -n dev -k tyk -o dev -b 
-=======
 # ./crd-migration.sh cleanup -n dev -k tyk -o dev -b
 
 # echo "Action $action"
@@ -1155,4 +1152,3 @@ esac
 # on="$(echo "$o2" | awk -F / '{print $2}')"
 # echo "Destination Operator Context $o and Namespace $on"
 # echo "Backup Directory $b"
->>>>>>> Stashed changes
