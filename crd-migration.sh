@@ -139,7 +139,7 @@ clean() {
 
     done
   else
-    echo "Taking into account the Source Operator Context when Backing up $(friendly_name "$1")"
+    echo "Taking into account the Source Operator Context when Cleaning up $(friendly_name "$1")"
     while read -r line; do
       name="$(echo "$line" | awk '{print $1}')"
       context_name="$(echo "$line" | awk '{print $2}')"
