@@ -1,6 +1,5 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-is_crds_available=0
 is_cleanable=1
 operatorcontext=""
 source_operator_namespace=""
@@ -16,29 +15,27 @@ operations_directory="./.operations/"
 source_operatorcontext=""
 source_operatorcontext_namespace=""
 
-scanned_apis=""
-scanned_policies=""
-backedup_apis=""
-backedup_policies=""
-migrated_apis=""
-migrated_policies=""
-cleanedup_apis=""
-cleanedup_policies=""
+declare -A scanned_crds
+declare -A backedup_crds
+declare -A migrated_crds
+declare -A cleanedup_crds
 current_context=""
 
 get_source_webhook_dir() {
-  dir="$operations_directory"source/
+  local dir="$operations_directory"source/
   [ ! -d "$dir" ] && mkdir -p "$dir"
   echo "$dir"
 }
 
 get_destination_webhook_dir() {
-  dir="$operations_directory"destination/
+  local dir="$operations_directory"destination/
   [ ! -d "$dir" ] && mkdir -p "$dir"
   echo "$dir"
 }
 
 get_backup_dir() {
+  local dir
+
   if [[ $source_operatorcontext != "" && $source_operatorcontext_namespace != "" ]]; then
     dir="$backup_directory""$source_namespace"/"$source_operatorcontext"/
   else
@@ -49,19 +46,9 @@ get_backup_dir() {
   echo "$dir"
 }
 
-get_api_backup_dir() {
-  dir="$(get_backup_dir)"api
-  [ ! -d "$dir" ] && mkdir -p "$dir"
-  echo "$dir"
-}
-
-get_policy_backup_dir() {
-  dir="$(get_backup_dir)"policy
-  [ ! -d "$dir" ] && mkdir -p "$dir"
-  echo "$dir"
-}
-
 get_live_dir() {
+  local dir
+
   if [[ $source_operatorcontext != "" && $source_operatorcontext_namespace != "" ]]; then
     dir="$live_directory""$source_namespace"/"$source_operatorcontext"/
   else
@@ -72,21 +59,100 @@ get_live_dir() {
   echo "$dir"
 }
 
-get_api_live_dir() {
-  dir="$(get_live_dir)"api
+get_crd_backup_dir() {
+  local dir
+
+  dir="$(get_backup_dir)$1"
   [ ! -d "$dir" ] && mkdir -p "$dir"
   echo "$dir"
 }
 
-get_policy_live_dir() {
-  dir="$(get_live_dir)"policy
+get_crd_live_dir() {
+  local dir
+
+  dir="$(get_live_dir)$1"
   [ ! -d "$dir" ] && mkdir -p "$dir"
   echo "$dir"
+}
+
+clean() {
+  local i=0
+
+  if [[ $source_operatorcontext == "" && $source_operatorcontext_namespace == "" ]]; then
+    for name in $(kubectl get "$1" -n "$source_namespace" -o name --context "$current_context"); do
+      name="${name##*/}"
+
+      if [[ $2 != "" ]]; then
+        if [[ -f "${2}"/"${name}".yaml ]]; then
+          delete_k8s_object "$name" "$1" "$source_namespace"
+          echo "Deleted $(friendly_name "$1") $name"
+          i=$((i + 1))
+        fi
+      else
+        delete_k8s_object "$name" "$1" "$source_namespace"
+        echo "Deleted $(friendly_name "$1") $name"
+        i=$((i + 1))
+      fi
+
+    done
+  else
+    while read -r line; do
+      name="$(echo "$line" | awk '{print $1}')"
+      context_name="$(echo "$line" | awk '{print $2}')"
+      context_namespace="$(echo "$line" | awk '{print $3}')"
+
+      if [[ $context_name == "$source_operatorcontext" && $context_namespace == "$source_operatorcontext_namespace" ]]; then
+
+        if [[ $2 != "" ]]; then
+          if [[ -f "${2}"/"${name}".yaml ]]; then
+            delete_k8s_object "$name" "$1" "$source_namespace"
+            echo "Deleted $(friendly_name "$1") $name"
+            i=$((i + 1))
+          fi
+        else
+          delete_k8s_object "$name" "$1" "$source_namespace"
+          echo "Deleted $(friendly_name "$1") $name"
+          i=$((i + 1))
+        fi
+
+      fi
+    done <<<"$(kubectl get "$1" -n "$source_namespace" -o=custom-columns='name:.metadata.name,context-name:.spec.contextRef.name,context-namespace:.spec.contextRef.namespace' --no-headers --context "$current_context")"
+  fi
+
+  cleanedup_crds["$1"]=$i
+}
+
+backup() {
+  local i=0
+
+  if [[ $source_operatorcontext == "" && $source_operatorcontext_namespace == "" ]]; then
+    for name in $(kubectl get "$1" -n "$source_namespace" -o name --context "$current_context"); do
+      name="${name##*/}"
+      kubectl get "${1}" "${name}" -n "$source_namespace" -o yaml --context "$current_context" >"${2}"/"${name}".yaml
+      echo "Backed Up $(friendly_name "$1") $name"
+      i=$((i + 1))
+    done
+  else
+    while read -r line; do
+      name="$(echo "$line" | awk '{print $1}')"
+      context_name="$(echo "$line" | awk '{print $2}')"
+      context_namespace="$(echo "$line" | awk '{print $3}')"
+
+      if [[ $context_name == "$source_operatorcontext" && $context_namespace == "$source_operatorcontext_namespace" ]] || [[ $1 == "operatorcontexts" ]]; then
+        kubectl get "${1}" "${name}" -n "$source_namespace" -o yaml --context "$current_context" >"${2}"/"${name}".yaml
+        echo "Backed Up $(friendly_name "$1") $name"
+        i=$((i + 1))
+      fi
+    done <<<"$(kubectl get "$1" -n "$source_namespace" -o=custom-columns='name:.metadata.name,context-name:.spec.contextRef.name,context-namespace:.spec.contextRef.namespace' --no-headers --context "$current_context")"
+  fi
+
+  backedup_crds["$1"]=$i
 }
 
 restore() {
+  local files crd i=0
+
   files=$(ls "$1")
-  i=0
 
   for file in $files; do
     crd=$(cat "$1"/"$file")
@@ -100,10 +166,10 @@ restore() {
       fi
     fi
 
-    if [ "$3" == "tykapis" ]; then
+    if [ "$3" == "apidefinitions" ]; then
       crd=$(indemnify_api "$crd")
     fi
-    if [ "$3" == "tykpolicies" ]; then
+    if [ "$3" == "securitypolicies" ]; then
       crd=$(indemnify_policy "$crd")
     fi
 
@@ -111,189 +177,214 @@ restore() {
     store "$crd" "$2/$file"
     apply "$crd"
 
-    echo "Restored $3 $file"
+    echo "Restored $(friendly_name "$3") $file"
     i=$((i + 1))
   done
 
-  report "migrate" "$3" "$i"
-}
-
-clean() {
-  i=0
-
-  if [[ $source_operatorcontext == "" && $source_operatorcontext_namespace == "" ]]; then
-    for name in $(kubectl get "$1" -n "$source_namespace" -o name --context "$current_context"); do
-      name="${name##*/}"
-
-      if [[ $2 != "" ]]; then
-        if [[ -f "${2}"/"${name}".yaml ]]; then
-          delete_k8s_object "$name" "$1" "$source_namespace"
-          echo "Deleted the $(friendly_name "$1") $name from the $source_namespace Namespace"
-          i=$((i + 1))
-        fi
-      else
-        delete_k8s_object "$name" "$1" "$source_namespace"
-        echo "Deleted the $(friendly_name "$1") $name from the $source_namespace Namespace"
-        i=$((i + 1))
-      fi
-
-    done
-  else
-    echo "Taking into account the Source Operator Context when Cleaning up $(friendly_name "$1")"
-    while read -r line; do
-      name="$(echo "$line" | awk '{print $1}')"
-      context_name="$(echo "$line" | awk '{print $2}')"
-      context_namespace="$(echo "$line" | awk '{print $3}')"
-
-      if [[ $context_name == "$source_operatorcontext" && $context_namespace == "$source_operatorcontext_namespace" ]]; then
-
-        if [[ $2 != "" ]]; then
-          if [[ -f "${2}"/"${name}".yaml ]]; then
-            delete_k8s_object "$name" "$1" "$source_namespace"
-            echo "Deleted the $(friendly_name "$1") $name from the $source_namespace Namespace"
-            i=$((i + 1))
-          fi
-        else
-          delete_k8s_object "$name" "$1" "$source_namespace"
-          echo "Deleted the $(friendly_name "$1") $name from the $source_namespace Namespace"
-          i=$((i + 1))
-        fi
-
-      fi
-    done <<<"$(kubectl get "$1" -n "$source_namespace" -o=custom-columns='name:.metadata.name,context-name:.spec.contextRef.name,context-namespace:.spec.contextRef.namespace' --no-headers --context "$current_context")"
-  fi
-
-  report "cleanup" "$1" "$i"
-}
-
-backup() {
-  i=0
-
-  if [[ $source_operatorcontext == "" && $source_operatorcontext_namespace == "" ]]; then
-    for name in $(kubectl get "$1" -n "$source_namespace" -o name --context "$current_context"); do
-      name="${name##*/}"
-      kubectl get "${1}" "${name}" -n "$source_namespace" -o yaml --context "$current_context" >"${2}"/"${name}".yaml
-      echo "Backed Up $(friendly_name "$1") $name"
-      i=$((i + 1))
-    done
-  else
-    echo "Taking into account the Source Operator Context when Backing up $(friendly_name "$1")"
-    while read -r line; do
-      name="$(echo "$line" | awk '{print $1}')"
-      context_name="$(echo "$line" | awk '{print $2}')"
-      context_namespace="$(echo "$line" | awk '{print $3}')"
-
-      if [[ $context_name == "$source_operatorcontext" && $context_namespace == "$source_operatorcontext_namespace" ]]; then
-        kubectl get "${1}" "${name}" -n "$source_namespace" -o yaml --context "$current_context" >"${2}"/"${name}".yaml
-        echo "Backed Up $(friendly_name "$1") $name"
-        i=$((i + 1))
-      fi
-    done <<<"$(kubectl get "$1" -n "$source_namespace" -o=custom-columns='name:.metadata.name,context-name:.spec.contextRef.name,context-namespace:.spec.contextRef.namespace' --no-headers --context "$current_context")"
-  fi
-
-  report "backup" "$1" "$i"
+  migrated_crds["$3"]=$i
 }
 
 scan() {
-  i=0
+  local i=0
 
   if [[ $source_operatorcontext == "" && $source_operatorcontext_namespace == "" ]]; then
     for name in $(kubectl get "$1" -n "$source_namespace" -o name --context "$current_context"); do
       i=$((i + 1))
     done
   else
-    echo "Taking into account the Source Operator Context when Scanning $(friendly_name "$1")"
     while read -r line; do
       context_name="$(echo "$line" | awk '{print $2}')"
       context_namespace="$(echo "$line" | awk '{print $3}')"
 
-      if [[ $context_name == "$source_operatorcontext" && $context_namespace == "$source_operatorcontext_namespace" ]]; then
+      if [[ $context_name == "$source_operatorcontext" && $context_namespace == "$source_operatorcontext_namespace" ]] || [[ $1 == "operatorcontexts" ]]; then
         i=$((i + 1))
       fi
     done <<<"$(kubectl get "$1" -n "$source_namespace" -o=custom-columns='name:.metadata.name,context-name:.spec.contextRef.name,context-namespace:.spec.contextRef.namespace' --no-headers --context "$current_context")"
   fi
 
-  report "scan" "$1" "$i"
-}
-
-report() {
-  case $1 in
-  scan)
-    case $2 in
-    tykapis) scanned_apis=$3 ;;
-    tykpolicies) scanned_policies=$3 ;;
-    esac
-    ;;
-  backup)
-    case $2 in
-    tykapis) backedup_apis=$3 ;;
-    tykpolicies) backedup_policies=$3 ;;
-    esac
-    ;;
-  migrate)
-    case $2 in
-    tykapis) migrated_apis=$3 ;;
-    tykpolicies) migrated_policies=$3 ;;
-    esac
-    ;;
-  cleanup)
-    case $2 in
-    tykapis) cleanedup_apis=$3 ;;
-    tykpolicies) cleanedup_policies=$3 ;;
-    esac
-    ;;
-  *) ;;
-  esac
+  scanned_crds["$1"]=$i
 }
 
 report_migration() {
+  local backup live
+
   printf "\n\nMigration Report:\n"
-  echo "API Statistics: $scanned_apis Found, $backedup_apis Backed Up, $migrated_apis Migrated"
-  echo "Policy Statistics: $scanned_policies Found, $backedup_policies Backed Up, $migrated_policies Migrated"
+
+  for i in "${!scanned_crds[@]}"; do
+    if [[ ${scanned_crds[$i]} -gt 0 ]]; then
+      if [[ $i == "operatorcontexts" ]]; then
+        echo "$(friendly_name "$i") Report: ${scanned_crds[$i]} Found, ${backedup_crds[$i]} Backed Up"
+      else
+        echo "$(friendly_name "$i") Report: ${scanned_crds[$i]} Found, ${backedup_crds[$i]} Backed Up, ${migrated_crds[$i]} Migrated"
+      fi
+    fi
+  done
+
+  for i in "${!scanned_crds[@]}"; do
+    if [[ ${scanned_crds[$i]} -eq 0 ]]; then
+      echo "No $(friendly_name "$i") Found"
+    fi
+  done
+
   backup=$(get_backup_dir)
   live=$(get_live_dir)
-  echo "Backed Up CRDs Directory: $(pwd)${backup##*.}"
+  echo "Back Up CRDs Directory: $(pwd)${backup##*.}"
   echo "Live CRDs Directory: $(pwd)${live##*.}"
   echo "Migration Complete"
 }
 
 report_cleanup() {
   printf "\n\nClean Up Report:\n"
-  echo "API Statistics: $scanned_apis Found, $cleanedup_apis Cleaned Up"
-  echo "Policy Statistics: $scanned_policies Found, $cleanedup_policies Cleaned Up"
 
-  # backup=$(get_backup_dir)
-  # live=$(get_live_dir)
-  # echo "Backed Up CRDs Directory: $(pwd)${backup##*.}"
-  # echo "Live CRDs Directory: $(pwd)${live##*.}"
+  for i in "${!scanned_crds[@]}"; do
+    if [[ ${scanned_crds[$i]} -gt 0 ]]; then
+      if [[ $i == "operatorcontexts" ]]; then
+        echo "$(friendly_name "$i") Report: ${scanned_crds[$i]} Found"
+      else
+        echo "$(friendly_name "$i") Report: ${scanned_crds[$i]} Found, ${cleanedup_crds[$i]} Cleaned Up"
+      fi
+    fi
+  done
+
+  for i in "${!scanned_crds[@]}"; do
+    if [[ ${scanned_crds[$i]} -eq 0 ]]; then
+      echo "No $(friendly_name "$i") Found"
+    fi
+  done
 
   echo "Clean Up Complete"
 }
 
-backup_namespace() {
-  echo "Backing Up all CRDs in Namespace"
+scan_crds() {
+  for crd in $(kubectl get crd -o name | grep tyk); do
+    crd="${crd##*/}"
+    crd="${crd%%.*}"
 
-  backup tykapis "$(get_api_backup_dir)"
-  echo "Backup $backedup_apis number of APIs"
+    scan "$crd"
+    echo "Discovered ${scanned_crds[$crd]} $(friendly_name "$crd")"
+  done
+}
 
-  backup tykpolicies "$(get_policy_backup_dir)"
-  echo "Backup $backedup_policies number of Policies"
+backup_crds() {
+  for crd in $(kubectl get crd -o name | grep tyk); do
+    crd="${crd##*/}"
+    crd="${crd%%.*}"
+
+    if [[ ${scanned_crds[$crd]} -gt 0 ]]; then
+      echo "Backing Up $(friendly_name "$crd")"
+      backup "$crd" "$(get_crd_backup_dir "$crd")"
+      echo "Backed Up ${backedup_crds[$crd]} $(friendly_name "$crd")"
+    fi
+
+  done
+}
+
+migrate_crds() {
+  switch_kubeconfig "$destination_kubeconfig"
+
+  for crd in $(kubectl get crd -o name | grep tyk); do
+    crd="${crd##*/}"
+    crd="${crd%%.*}"
+
+    if [[ ${scanned_crds[$crd]} -gt 0 && $crd != "operatorcontexts" ]]; then
+      echo "Migrating $(friendly_name "$crd")"
+      restore "$(get_crd_backup_dir "$crd")" "$(get_crd_live_dir "$crd")" "$crd"
+      echo "Migrated ${migrated_crds[$crd]} $(friendly_name "$crd")"
+    fi
+
+  done
+
+  switch_kubeconfig "$source_kubeconfig"
+}
+
+cleanup_crds() {
+  if [[ ${scanned_crds[securitypolicies]} -gt 0 ]]; then
+    clean_crds "securitypolicies" "$1"
+  fi
+
+  for crd in $(kubectl get crd -o name | grep tyk); do
+    crd="${crd##*/}"
+    crd="${crd%%.*}"
+
+    if [[ ${scanned_crds[$crd]} -gt 0 && $crd != "operatorcontexts" && $crd != "securitypolicies" ]]; then
+      clean_crds "$crd" "$1"
+    fi
+
+  done
+}
+
+clean_crds() {
+  echo "Cleaning Up $(friendly_name "$1")"
+
+  if [ "$2" != "" ]; then
+    if [ "$2" == "-" ]; then
+      clean "$1" "$(get_crd_backup_dir "$1")"
+    else
+      clean "$1" "$2/$1"
+    fi
+  else
+    clean "$1"
+  fi
+
+  echo "Cleaned Up ${cleanedup_crds[$1]} $(friendly_name "$1")"
+}
+
+are_crds_available() {
+  for i in "${!scanned_crds[@]}"; do
+    if [[ ${scanned_crds[$i]} -gt 0 ]]; then
+      echo 1
+      return
+    fi
+  done
+  echo 0
 }
 
 scan_namespace() {
-  echo "Scanning the $source_namespace Namespace of the $(get_kubeconfig) Kubernetes Context for CRDs...."
+  if [[ $source_operatorcontext != "" && $source_operatorcontext_namespace != "" ]]; then
+    echo "Scanning $source_namespace Namespace of $(get_kubeconfig) Kubernetes Context for CRDs associated with $source_operatorcontext Operator Context"
+  else
+    echo "Scanning $source_namespace Namespace of $(get_kubeconfig) Kubernetes Context for CRDs"
+  fi
 
-  scan tykapis
-  echo "Discover $scanned_apis number of APIs"
+  scan_crds
+}
 
-  scan tykpolicies
-  echo "Discover $scanned_policies number of Policies"
+backup_namespace() {
+  if [[ $source_operatorcontext != "" && $source_operatorcontext_namespace != "" ]]; then
+    echo "Backing Up all CRDs in $source_namespace Namespace of $(get_kubeconfig) Kubernetes Context associated with $source_operatorcontext Operator Context"
+  else
+    echo "Backing Up all CRDs in $source_namespace Namespace of $(get_kubeconfig) Kubernetes Context"
+  fi
 
-  is_crds_available=$((scanned_apis != 0 || scanned_policies != 0))
+  backup_crds
+}
+
+migrate_namespace() {
+  if [[ $source_operatorcontext != "" && $source_operatorcontext_namespace != "" ]]; then
+    echo "Migrating CRDs associated with $source_operatorcontext Operator Context, from Backup to $destination_kubeconfig Kubernetes Context"
+  else
+    echo "Migrating CRDs from Backup to $destination_kubeconfig Kubernetes Context"
+  fi
+
+  migrate_crds
+}
+
+clean_namespace() {
+  if [[ $source_operatorcontext != "" && $source_operatorcontext_namespace != "" ]]; then
+    if [ "$1" != "" ]; then
+      echo "Cleaning Up Backed Up CRDs associated with $source_operatorcontext"
+    else
+      echo "Cleaning Up CRDs associated with $source_operatorcontext"
+    fi
+  else
+    echo "Cleaning Up CRDs"
+  fi
+
+  cleanup_crds "$1"
 }
 
 find_k8s_object() {
-  k8s_object=""
+  local name k8s_object=""
   while read -r line; do
     name="$(echo "$line" | awk '{print $1}')"
     # if [[ $line == *"$2"* ]]; then
@@ -375,6 +466,8 @@ validate_source_context() {
 }
 
 find_operatorcontext() {
+  local ns oc namespace context
+
   if [[ $1 == *"/"* ]]; then
     ns="$(echo "$1" | awk -F / '{print $1}')"
     oc="$(echo "$1" | awk -F / '{print $2}')"
@@ -399,6 +492,8 @@ find_operatorcontext() {
 }
 
 find_source_operatorcontext() {
+  local ns oc namespace context
+
   if [[ $1 == */* ]]; then
     ns="$(echo "$1" | awk -F / '{print $1}')"
     oc="$(echo "$1" | awk -F / '{print $2}')"
@@ -482,19 +577,6 @@ check_crds_cutover() {
   [ $is_cleanable == 1 ] && check_cutover "$(get_policy_backup_dir)" "tykpolicies"
 }
 
-migrate_crd() {
-  echo "Migrating CRDs from Backup"
-  switch_kubeconfig "$destination_kubeconfig"
-
-  restore "$(get_api_backup_dir)" "$(get_api_live_dir)" "tykapis"
-  echo "Migrated $migrated_apis number of APIs"
-
-  restore "$(get_policy_backup_dir)" "$(get_policy_live_dir)" "tykpolicies"
-  echo "Migrated $migrated_policies number of Policies"
-
-  switch_kubeconfig "$source_kubeconfig"
-}
-
 rollback_crd() {
   echo "Rolling Backing Applied CRDs"
   switch_kubeconfig "$destination_kubeconfig"
@@ -505,6 +587,8 @@ rollback_crd() {
 }
 
 invalidate() {
+  local crd files
+
   files=$(ls "$1")
 
   for file in $files; do
@@ -519,6 +603,8 @@ invalidate() {
 }
 
 check_cutover() {
+  local files crd
+
   files=$(ls "$1")
 
   for file in $files; do
@@ -538,35 +624,18 @@ check_cutover() {
   is_cleanable=1
 }
 
-clean_crds() {
-  if [ "$1" != "" ]; then
-    echo "Cleaning Up Backed up CRDs"
-    if [ "$1" == "-" ]; then
-      cleanup_crds "$(get_policy_backup_dir)" "$(get_api_backup_dir)"
-    else
-      cleanup_crds "$1"/api "$1"/policy
-    fi
-  else
-    echo "Cleaning Up CRDs"
-    cleanup_crds
-  fi
-}
-
-cleanup_crds() {
-  clean "tykpolicies" "$1"
-  echo "Cleaned Up $cleanedup_policies number of Policies"
-
-  clean "tykapis" "$2"
-  echo "Cleaned Up $cleanedup_apis number of APIs"
-}
-
 friendly_name() {
-  if [ "$1" == "tykapis" ]; then
-    echo "API"
-  fi
-  if [ "$1" == "tykpolicies" ]; then
-    echo "Policy"
-  fi
+  case $1 in
+  apidefinitions) echo "APIs" ;;
+  securitypolicies) echo "Policies" ;;
+  apidescriptions) echo "API Descriptions" ;;
+  operatorcontexts) echo "Operator Contexts" ;;
+  portalapicatalogues) echo "Portal Catalogues" ;;
+  portalconfigs) echo "Portal Configs" ;;
+  subgraphs) echo "Sub Graphs" ;;
+  supergraphs) echo "Super Graphs" ;;
+  *) echo "$1" ;;
+  esac
 }
 
 apply() {
@@ -586,20 +655,20 @@ store() {
 }
 
 prepare() {
-  crd=$1
+  local crd=$1
   crd=$(echo "$crd" | yq "del(.metadata.annotations, .metadata.creationTimestamp, .metadata.finalizers[], .metadata.generation, .metadata.namespace, .metadata.resourceVersion, .metadata.uid, .spec.contextRef, .status)" -)
   crd=$(echo "$crd" | yq '.spec.contextRef.name = '\""$operatorcontext"\"', .spec.contextRef.namespace = '\""$operatorcontext_namespace"\" -)
   echo "$crd"
 }
 
 prepare_invalidation() {
-  crd=$1
+  local crd=$1
   crd=$(echo "$crd" | yq "del(.metadata.finalizers[], .spec.contextRef)" -)
   echo "$crd"
 }
 
 is_invalid() {
-  crd=$1
+  local finalization_check context_check crd=$1
 
   finalization_check=$(echo "$crd" | yq '.metadata | has("finalizers")' -)
   context_check=$(echo "$crd" | yq '.spec | has("contextRef")' -)
@@ -612,14 +681,14 @@ is_invalid() {
 }
 
 indemnify_api() {
-  crd=$1
+  local api_id crd=$1
   api_id=$(echo "$crd" | yq '.status.api_id' -)
   crd=$(echo "$crd" | yq '.spec.api_id = '\""$api_id"\" -)
   echo "$crd"
 }
 
 indemnify_policy() {
-  crd=$1
+  local pol_id crd=$1
   pol_id=$(echo "$crd" | yq '.spec._id' -)
   crd=$(echo "$crd" | yq '.spec.id = '\""$pol_id"\" -)
   crd=$(echo "$crd" | yq "del(.spec._id)" -)
@@ -632,6 +701,8 @@ source_prerequisites() {
 }
 
 dependencies() {
+  local version
+
   if ! version=$(kubectl version 2>&1); then
     echo "Kubectl Is not Installed on the Machine. Its required to run the Migration Tooling. More information at https://kubernetes.io/docs/tasks/tools/#kubectl" >&2
     echo "Aborting Operation"
@@ -644,7 +715,8 @@ dependencies() {
     exit 1
   fi
 
-  echo 'The Required Dependecies are Available. Begin Process...'
+  unset "$version"
+  echo "The Required Dependecies are Available. Begin Process..."
 }
 
 # prerequisites "$n" "$k1" "$k2" "$o1" "$o2"
@@ -715,18 +787,43 @@ migrate() {
 
     scan_namespace
 
-    if [ $is_crds_available == 1 ]; then
+    if [ "$(are_crds_available)" ]; then
       echo "Begin Migration"
 
-      # off_source_operator
       backup_namespace
-      migrate_crd
+      migrate_namespace
       report_migration
     else
       echo "No CRDs in the Source Namespace $source_namespace to migrate"
     fi
 
-    # on_source_operator
+  else
+    echo "Aborting Operation"
+  fi
+}
+
+cleanup() {
+  dependencies
+  echo "Cleaning Up CRDs"
+
+  source_prerequisites "$1" "$2" "$3"
+
+  if [[ "$source_kubeconfig" != "" && "$source_namespace" != "" && "$source_operator_namespace" != "" ]]; then
+
+    scan_namespace
+
+    if [ "$(are_crds_available)" ]; then
+      echo "Begin Clean Up"
+
+      clean_namespace "$4"
+      # clean_operations
+      # clean_backups
+
+      report_cleanup
+    else
+      echo "No CRDs in the Source Namespace $source_namespace to clean up"
+    fi
+
   else
     echo "Aborting Operation"
   fi
@@ -761,46 +858,6 @@ startup-operator() {
 
 # cleanup "$n" "$s"
 # cleanup "$n" "$k1" "$o1" "$b"
-
-cleanup() {
-  dependencies
-  echo "Cleaning Up CRDs"
-
-  source_prerequisites "$1" "$2" "$3"
-
-  if [[ "$source_kubeconfig" != "" && "$source_namespace" != "" && "$source_operator_namespace" != "" ]]; then
-
-    scan_namespace
-
-    if [ $is_crds_available == 1 ]; then
-      echo "Begin Clean Up"
-
-      clean_crds "$4"
-
-      # on_source_operator
-      # clean_operations
-      # clean_backups
-
-      report_cleanup
-    else
-      echo "No CRDs in the Source Namespace $source_namespace to clean up"
-    fi
-
-    # on_source_operator
-    # check_crds_cutover
-    # if [ $is_cleanable == 1 ]; then
-    #   clean_crds
-    #   # on_source_operator
-    #   clean_operations
-    #   clean_backups
-    # fi
-
-  else
-    echo "Aborting Operation"
-  fi
-
-  # on_source_operator
-}
 
 startup_operator_usage() {
   cat <<EOF
@@ -944,6 +1001,8 @@ EOF
 }
 
 init_source_namespace() {
+  local context
+
   context=$(kubectl config current-context)
   if [[ -z $context ]]; then
     echo "A Source KubeConfig was not specified with the -s flag, and we couldn't use the Current KubeConfig as the Source"
@@ -976,13 +1035,14 @@ execute() {
 }
 
 start() {
-  a="tykapise"
+  local b a="tykapise"
   b="tyk"
 
   execute "get nodes"
   execute "get ${a} -n ${b} -o=custom-columns='name:.metadata.name,context-name:.spec.contextRef.name,context-namespace:.spec.contextRef.namespace'"
 }
 
+# scan_crds
 # start
 # exit
 
@@ -990,7 +1050,6 @@ action="$1"
 shift
 
 i=2
-
 length=$#
 
 while (("$i" <= $((length + 1)))); do
