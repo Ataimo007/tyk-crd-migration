@@ -1,37 +1,23 @@
 #!/usr/bin/env bash
 
-is_cleanable=1
 operatorcontext=""
 source_operator_namespace=""
 destination_operator_namespace=""
 operatorcontext_namespace=""
 source_kubeconfig=""
 destination_kubeconfig=""
-operator_replica_count=1
 source_namespace=""
 backup_directory="./backup/"
 live_directory="./live/"
-operations_directory="./.operations/"
 source_operatorcontext=""
 source_operatorcontext_namespace=""
+masked_prefix="tyk-crd-migration-masked-operator-context-"
 
 declare -A scanned_crds
 declare -A backedup_crds
 declare -A migrated_crds
 declare -A cleanedup_crds
 current_context=""
-
-get_source_webhook_dir() {
-  local dir="$operations_directory"source/
-  [ ! -d "$dir" ] && mkdir -p "$dir"
-  echo "$dir"
-}
-
-get_destination_webhook_dir() {
-  local dir="$operations_directory"destination/
-  [ ! -d "$dir" ] && mkdir -p "$dir"
-  echo "$dir"
-}
 
 get_backup_dir() {
   local dir
@@ -461,7 +447,9 @@ validate_source_context() {
       find_source_operatorcontext "$2"
     fi
 
-    validate_source_namespace "$1"
+    if [ "$1" != "" ]; then
+      validate_source_namespace "$1"
+    fi
   fi
 }
 
@@ -515,113 +503,6 @@ find_source_operatorcontext() {
   else
     echo "Source Operator Context $context wasn't found in Current Kubernetes Context $(get_kubeconfig) (deployment.apps/tyk-operator-controller-manager)"
   fi
-}
-
-suspend_source_webhook() {
-  echo "Suspending Webhooks for Tyk Operator in the Kubernetes Context $(get_kubeconfig)"
-  kubectl get MutatingWebhookConfiguration tyk-operator-mutating-webhook-configuration -o yaml --context "$current_context" >"$(get_source_webhook_dir)"tyk-operator-mutating-webhook-configuration.yaml
-  kubectl get ValidatingWebhookConfiguration tyk-operator-validating-webhook-configuration -o yaml --context "$current_context" >"$(get_source_webhook_dir)"tyk-operator-validating-webhook-configuration.yaml
-  kubectl delete MutatingWebhookConfiguration tyk-operator-mutating-webhook-configuration --context "$current_context" >/dev/null
-  kubectl delete ValidatingWebhookConfiguration tyk-operator-validating-webhook-configuration --context "$current_context" >/dev/null
-}
-
-restore_source_webhook() {
-  echo "Restoring Webhooks for Tyk Operator in the Kubernetes Context $(get_kubeconfig)"
-  kubectl create -f "$(get_source_webhook_dir)"tyk-operator-mutating-webhook-configuration.yaml --context "$current_context" >/dev/null
-  kubectl create -f "$(get_source_webhook_dir)"tyk-operator-validating-webhook-configuration.yaml --context "$current_context" >/dev/null
-}
-
-clean_operations() {
-  echo "Cleaning up all hidden operation files"
-  rm -r $operations_directory
-}
-
-clean_backups() {
-  echo "Cleaning up all backup files"
-  rm -r $backup_directory
-}
-
-off_source_operator() {
-  suspend_source_webhook
-  shutdown_source_operator
-}
-
-on_source_operator() {
-  restore_source_webhook
-  startup_source_operator
-}
-
-shutdown_source_operator() {
-  echo "Shuting Down Tyk Operator for Kubernetes Context $(get_kubeconfig)"
-  operator_replica_count=$(kubectl get deployments tyk-operator-controller-manager -n "$source_operator_namespace" -o jsonpath="{.spec.replicas}" --context "$current_context")
-  kubectl scale deployment tyk-operator-controller-manager --replicas 0 -n "$source_operator_namespace" --context "$current_context" >/dev/null
-  echo "Tyk Operator is Shutdown (Scaled Down)"
-}
-
-startup_source_operator() {
-  echo "Starting Up Tyk Operator for Kubernetes Context $(get_kubeconfig)"
-  kubectl scale deployment tyk-operator-controller-manager --replicas "$operator_replica_count" -n "$source_operator_namespace" --context "$current_context" >/dev/null
-  echo "Tyk Operator is up"
-}
-
-invalidate_crds() {
-  echo "Removiing the Prevouse Source of Truth for your CRDs"
-  invalidate "$(get_api_backup_dir)" "tykapis"
-  invalidate "$(get_policy_backup_dir)" "tykpolicies"
-}
-
-check_crds_cutover() {
-  echo "Checking if the Source of Truth has been invalidated or cutover"
-
-  [ $is_cleanable == 1 ] && check_cutover "$(get_api_backup_dir)" "tykapis"
-  [ $is_cleanable == 1 ] && check_cutover "$(get_policy_backup_dir)" "tykpolicies"
-}
-
-rollback_crd() {
-  echo "Rolling Backing Applied CRDs"
-  switch_kubeconfig "$destination_kubeconfig"
-  delete_api
-  delete_policy
-  delete_operatorcontext
-  switch_kubeconfig "$source_kubeconfig"
-}
-
-invalidate() {
-  local crd files
-
-  files=$(ls "$1")
-
-  for file in $files; do
-    crd=$(cat "$1"/"$file")
-    crd=$(get_k8s_object "${file%%.*}" "$2" "$source_namespace")
-    crd=$(prepare_invalidation "$crd")
-    apply "$crd"
-
-    echo "Invalidated the Source of Truth for $(friendly_name "$2") $file"
-
-  done
-}
-
-check_cutover() {
-  local files crd
-
-  files=$(ls "$1")
-
-  for file in $files; do
-    crd=$(cat "$1"/"$file")
-    crd=$(get_k8s_object "${file%%.*}" "$2" "$source_namespace")
-
-    if [ "$(is_invalid "$crd")" == 1 ]; then
-      echo "The $(friendly_name "$2") $file has been invalidated"
-    else
-      echo "The $(friendly_name "$2") $file has not yet been invalidated, please run the cutover command"
-      is_cleanable=0
-      return
-    fi
-
-  done
-
-  is_cleanable=1
 }
 
 friendly_name() {
@@ -716,10 +597,8 @@ dependencies() {
   fi
 
   unset "$version"
-  echo "The Required Dependecies are Available. Begin Process..."
+  echo "The Required Dependencies are Available. Begin Process..."
 }
-
-# prerequisites "$n" "$k1" "$k2" "$o1" "$o2"
 
 prerequisites() {
   check_kubeconfigs "$2" "$3"
@@ -775,8 +654,6 @@ check_kubeconfig() {
   echo 0
 }
 
-# migrate "$n" "$k1" "$k2" "$o1" "$o2"
-
 migrate() {
   dependencies
   echo "Migrating CRDs"
@@ -816,9 +693,6 @@ cleanup() {
       echo "Begin Clean Up"
 
       clean_namespace "$4"
-      # clean_operations
-      # clean_backups
-
       report_cleanup
     else
       echo "No CRDs in the Source Namespace $source_namespace to clean up"
@@ -829,74 +703,230 @@ cleanup() {
   fi
 }
 
-cutover() {
+mask() {
   dependencies
-  echo "Cutting Over Source of Truth away from Source Kubernetes Context"
+  source_prerequisites "" "$1" "$2"
 
-  source_prerequisites "$1" "$2"
+  if [[ "$source_kubeconfig" != "" && "$source_operator_namespace" != "" ]]; then
+    echo "Begin Operator Context Masking"
+    mask_operator_context "$source_operatorcontext" "$source_operatorcontext_namespace" "$3"
 
-  if [[ "$source_kubeconfig" != "" && "$source_namespace" != "" && "$source_operator_namespace" != "" ]]; then
-    # on_source_operator
-    invalidate_crds
-    # off_source_operator
+    echo "Operator Context Masking Complete"
+  fi
+}
+
+unmask() {
+  dependencies
+  source_prerequisites "" "$1" "$2"
+
+  if [[ "$source_kubeconfig" != "" && "$source_operator_namespace" != "" ]]; then
+    echo "Begin Unmasking the Operator Context"
+    unmask_operator_context "$source_operatorcontext" "$source_operatorcontext_namespace" "$3"
+
+    echo "Operator Context Unmasking Complete"
+  fi
+}
+
+unmask_operator_context() {
+  if masked=$(kubectl get configmap "$(get_masked_name "$1" "$2")" -o yaml --context "$current_context" 2>&1); then
+    echo "The Operator Context is Masked, Unmasking...."
+    unregister_mask "$1" "$2"
   else
-    echo "Aborting Operation"
+    echo "Operator Context haven't been Masked. Aborting Operation"
   fi
 
-  # startup_source_operator
+  unset "$masked"
 }
 
-rollback() {
-  dependencies
-  echo "The Rollback Command is yet to be Implemented"
+mask_operator_context() {
+  if masked=$(kubectl get configmap "$(get_masked_name "$1" "$2")" -o yaml --context "$current_context" 2>&1); then
+    echo "This Operator Context is Masked, Update Mask...."
+    mask_context "$1" "$2" "$3" >/dev/null
+    echo "Updated Operator Context Mask"
+  else
+    echo "This Operator Context haven't been Masked, Masking Operator Context"
+    register_mask "$1" "$2" "$3"
+  fi
+
+  unset "$masked"
 }
 
-startup-operator() {
-  dependencies
-  echo "The Startup Operator is yet to be Implemented"
+unregister_mask() {
+  local dashboard_url
+
+  unmask_context "$1" "$2"
+  echo "Unmasked Operator Context"
+
+  kubectl delete configmap "$(get_masked_name "$1" "$2")" --context "$current_context" >/dev/null
+  echo "Unregistered Masked Operator"
+
+  if [[ $(kubectl get configmap | grep $masked_prefix) == "" ]]; then
+    echo "No Masked Operator available, Removing API Mask"
+    delete_mask
+  fi
 }
 
-# cleanup "$n" "$s"
-# cleanup "$n" "$k1" "$o1" "$b"
+register_mask() {
+  local dashboard_url
 
-startup_operator_usage() {
+  create_mask
+  if [[ $(is_operator_mask_applied) ]]; then
+    is_operator_mask_reachable "$3"
+
+    dashboard_url=$(mask_context "$1" "$2" "$3")
+    echo "Masked Operator Context"
+
+    kubectl create configmap "$(get_masked_name "$1" "$2")" --from-literal=dashboard_url="$dashboard_url" --context "$current_context" >/dev/null
+    echo "Registered Masked Operator"
+  fi
+}
+
+unmask_context() {
+  local operator_context
+  operator_context=$(kubectl get operatorcontext "$1" -n "$2" -o yaml --context "$current_context")
+  dashboard_url=$(kubectl get configmap "$(get_masked_name "$1" "$2")" -o=jsonpath='{.data.dashboard_url}')
+  operator_context=$(echo "$operator_context" | yq '.spec.env.url = '\""$dashboard_url"\" -)
+  echo "$operator_context" | kubectl apply -f - -n "$2" --context "$current_context" >/dev/null
+}
+
+get_masked_name() {
+  echo "$masked_prefix$2-$1"
+}
+
+mask_context() {
+  local operator_context dashboard_url
+  operator_context=$(kubectl get operatorcontext "$1" -n "$2" -o yaml --context "$current_context")
+  dashboard_url=$(echo "$operator_context" | yq '.spec.env.url' -)
+  operator_context=$(echo "$operator_context" | yq '.spec.env.url = '\""$3/operator-mask"\" -)
+  echo "$operator_context" | kubectl apply -f - -n "$2" --context "$current_context" >/dev/null
+  echo "$dashboard_url"
+}
+
+is_operator_mask_applied() {
+  if result=$(kubectl get tykapis tyk-crd-migration-operator-mask -o=custom-columns='name:.metadata.name,status:.status.latestTransaction.status' --no-headers --context "$current_context" 2>&1); then
+    name="$(echo "$result" | awk '{print $1}')"
+    status="$(echo "$result" | awk '{print $2}')"
+
+    if [[ $name == "tyk-crd-migration-operator-mask" && $status == "Successful" ]]; then
+      echo 1
+      return
+    fi
+  fi
+  echo 0
+}
+
+is_operator_mask_reachable() {
+  local response
+
+  if response=$(curl --location "$1/operator-mask" 2>&1); then
+    if [[ $response == *"tyk-crd-migration"* && $response == *"mask"* ]]; then
+      echo "Mask is publicly accessible and ready to be used by the Operator Context"
+      return
+    else
+      echo "The Operator Mask didn't return a valid Response"
+    fi
+  else
+    echo "The Gateway URL isn't publicly accessible from the Internet, kindly double check if this is intended"
+  fi
+
+}
+
+delete_mask() {
+  kubectl delete tykapis tyk-crd-migration-operator-mask --context "$current_context" >/dev/null
+}
+
+create_mask() {
+  kubectl create -f - --context "$current_context" &>/dev/null <<EOF
+apiVersion: tyk.tyk.io/v1alpha1
+kind: ApiDefinition
+metadata:
+  name: tyk-crd-migration-operator-mask
+spec:
+  name: "Tyk CRD Migration Operator Mask"
+  active: true
+  use_keyless: true
+  proxy:
+    target_url: http://httpbin.org
+    listen_path: /operator-mask
+    strip_listen_path: true
+  version_data:
+    default_version: Default
+    not_versioned: true
+    versions:
+      Default:
+        name: Default
+        use_extended_paths: true
+        paths:
+          black_list: []
+          ignored: []
+          white_list: []
+        extended_paths:
+          ignored:
+            - ignore_case: false
+              method_actions:
+                GET:
+                  action: "reply"
+                  code: 200
+                  data: '{"x-agent": "tyk-crd-migration", "x-action": "mask", "message": "Masking Operator Functionality"}'
+                  headers: {"Content-Type": "application/json"}
+                POST:
+                  action: "reply"
+                  code: 200
+                  data: '{"x-agent": "tyk-crd-migration", "x-action": "mask", "message": "Masking Operator Functionality"}'
+                  headers: {"Content-Type": "application/json"}
+                DELETE:
+                  action: "reply"
+                  code: 200
+                  data: '{"x-agent": "tyk-crd-migration", "x-action": "mask", "message": "Masking Operator Functionality"}'
+                  headers: {"Content-Type": "application/json"}
+                PUT:
+                  action: "reply"
+                  code: 200
+                  data: '{"x-agent": "tyk-crd-migration", "x-action": "mask", "message": "Masking Operator Functionality"}'
+                  headers: {"Content-Type": "application/json"}
+              path: /*
+EOF
+
+  echo "Created API Mask"
+}
+
+mask_usage() {
   cat <<EOF
 Command:
-statup-operator (Not Yet Implemented)
+mask
 
 Description:
-The statup-operator command is a Utility Command used to restore your Tyk Operator to the Right State in the situation where the Migration doesn't complete successfully
+The mask command is to mask the functionality of the Operator for a specify Operator Context. This is used so you can carry out operations on the CRDs without alerting the Dashboard on reconciliation.
 
 Usage: 
-crd-migration statup-operator [ -s SOURCE_KUBECONFIG ]
+crd-migration mask [ -k SOURCE_KUBECONFIG ] [ -o <NAMESPACE>/SOURCE_KUBECONFIG ] [ -g GATEWAY_URL ]
 
 Flags:
 Below are the available flags
 
-  -k : KUBECONFIG ........... The Name of the KubeConfig for the Kubernetes Cluster. If not specified, defaults to the Current KubeConfig Context
+  -k : KUBECONFIG .................. The Name of the KubeConfig for the Kubernetes Cluster. If not specified, defaults to the Current KubeConfig Context
+  -o : OPERATOR_CONTEXT ............ The Name of the Tyk Operator Context that should be Masked. For example -o operator-context.
+  -g : GATEWAY_URL ................. The URL to the Gateway of the Dashboard associated to the specified Operator Context.
   
 EOF
 }
 
-rollback_usage() {
+unmask_usage() {
   cat <<EOF
-
 Command:
-rollback (Shared Dashboard) - Not Yet Implemented
+unmask
 
 Description:
-The rollback command is used to clean up the last migration attempt and restore your CRDs to the last known state.
+The unmask command is to remove any available mask registered on an Operator Context. It's usage is followed after the mask Command to re-enable Dashbaord Communication.
 
 Usage: 
-crd-migration rollback -n NAMESPACE [ -k SOURCE_KUBECONFIG DESTINATION_KUBECONFIG ] [ -o <NAMESPACE>/SOURCE_KUBECONFIG ] [ -b ]
+crd-migration mask [ -k SOURCE_KUBECONFIG ] [ -o <NAMESPACE>/SOURCE_KUBECONFIG ] [ -g GATEWAY_URL ]
 
 Flags:
 Below are the available flags
 
-  -n : NAMESPACE ................... The Namespace in the Source Kubernetes Cluster that Contains the CRDs you want to Roll Back
-  -k : SOURCE_KUBECONFIG ........... The Name of the KubeConfig Context for the Kubernetes Cluster to Roll Back. For example -k context. The Current KubeConfig Context will be consider if not specified
-  -o : OPERATOR_CONTEXT ............ The Name of the Tyk Operator Context that should be consider while Rolling Back. For example -o operator-context. If not specified, all Tyk's CRDs will be considered for cleanup.
-  -b : BACKUP ...................... Flag used to only Roll Back CRDs that are Backed Up. The defualt directory is considered if no Directory is specified.
+  -k : KUBECONFIG .................. The Name of the KubeConfig for the Kubernetes Cluster. If not specified, defaults to the Current KubeConfig Context
+  -o : OPERATOR_CONTEXT ............ The Name of the Tyk Operator Context that should be Unmasked. For example -o operator-context.
   
 EOF
 }
@@ -925,29 +955,6 @@ Examples:
 ./crd-migration.sh cleanup -n dev -k tyk2 -o prod -b
 ./crd-migration.sh cleanup -n dev -k tyk -o dev/dev -b
 
-EOF
-}
-
-cutover_usage() {
-  cat <<EOF
-
-Command:
-cutover (Shared Dashboard) - In Progress
-
-Description:
-The cutover is a follow up command executed after the migrate command used to limit the Source of Truth to only the Destination Cluster, invalidating that of the Source Cluster. This command also leaves your Cluster in an intermediate start, and so should be followed up with the Cleanup or Rollback Command.
-
-Usage: 
-crd-migration cutover -n NAMESPACE [ -k SOURCE_KUBECONFIG ] [ -o <NAMESPACE>/SOURCE_KUBECONFIG ] [ -b ]
-
-Flags:
-Below are the available flags
-
-  -n : NAMESPACE ................... The Namespace in the Source Kubernetes Cluster that Contains the CRDs you want to cutover
-  -k : KUBECONFIG .................. The Name of the KubeConfig Context for the Kubernetes Cluster to Clean Up. For example -k context. The Current KubeConfig Context will be consider if not specified
-  -o : OPERATOR_CONTEXT ............ The Name of the Tyk Operator Context that should be consider while Cutting Over. For example -o operator-context. If not specified, all Tyk's CRDs will be considered for cutover.
-  -b : BACKUP ...................... Flag used to only Cut Over CRDs that are Backed Up. The defualt directory is considered if no Directory is specified.
-  
 EOF
 }
 
@@ -991,11 +998,10 @@ crd-migration COMMAND -flags [OPTIONs]*
 Cmmands:
  Below are the available commands:
 
-  migrate .......................... The Namespace in the Sourc KubeConfig that Contains the CRDs you want to Migrate
-  cleanup .......................... The Name of the KubeConfig for the Destination Kubernetes Cluster
-  cutover (In Progress) ............ The Name of the KubeConfig for the Source Kubernetes Cluster
-  rollback (In Progress) ........... The Name of the Operator Context in the Destination Kubernetes Cluster for deploying the CRDs
-  operator-startup (In Progress) ... The Name of the Operator Context in the Destination Kubernetes Cluster for deploying the CRDs
+  migrate .......................... To Migrate CRDs across Kubenetes Clusters
+  cleanup .......................... To Clean Up CRDs from a Namespace without deleting them from the Dashboard (DB)
+  wipeoff .......................... To Clean Up CRDs from a Namespace and the Dashboard (DB)
+  mask-operator .................... To Mask the Operator Functionality preventing operations on the Dashboard
 
 EOF
 }
@@ -1010,15 +1016,6 @@ init_source_namespace() {
     exit 1
   fi
   echo "$context"
-}
-
-get_next_arg() {
-  if [[ $arg_count != "-\w" ]]; then
-    arg=$1
-    shift
-    arg_count=$((arg_count + 1))
-  fi
-  echo "$arg"
 }
 
 execute() {
@@ -1060,6 +1057,15 @@ while (("$i" <= $((length + 1)))); do
     i=$((i + 1))
     if ! [[ $1 == "" || $1 =~ -[a-zA-Z]{1}$ ]]; then
       b=$1
+      shift
+      i=$((i + 1))
+    fi
+    ;;
+  -g)
+    shift
+    i=$((i + 1))
+    if ! [[ $1 == "" || $1 =~ -[a-zA-Z]{1}$ ]]; then
+      g=$1
       shift
       i=$((i + 1))
     fi
@@ -1116,22 +1122,22 @@ migrate)
     exit 1
   fi
   if [[ -z $k1 ]]; then
-    echo "Ensure to use the -n flag to specify the namespace that contains the CRDs"
+    echo "Ensure to use the -k flag to specify the Source Kube Config (first parameter) you are migrating From"
     migrate_usage
     exit 1
   fi
   if [[ -z $k2 ]]; then
-    echo "Ensure to use the -d flag to specify the Destination KubeConfig"
+    echo "Ensure to use the -k flag to specify the Destination Kube Config (second parameter) you are migrating To"
     migrate_usage
     exit 1
   fi
   if [[ -z $o1 ]]; then
-    echo "Ensure to use the -o flag to specify the Operator Context in the Destination Cluster"
+    echo "Ensure to use the -o flag to specify the Source Operator Context (first parameter) in the Source Cluster"
     migrate_usage
     exit 1
   fi
   if [[ -z $o2 ]]; then
-    echo "Ensure to use the -o flag to specify the Operator Context in the Destination Cluster"
+    echo "Ensure to use the -o flag to specify the Destination Operator Context (second parameter) in the Destination Cluster"
     migrate_usage
     exit 1
   fi
@@ -1144,17 +1150,6 @@ migrate)
   fi
 
   migrate "$n" "$k1" "$k2" "$o1" "$o2"
-  ;;
-cutover)
-  if [[ -z $n ]]; then
-    echo "Ensure to use the -n flag to specify the namespace that contains the CRDs"
-    cutover_usage
-    exit 1
-  fi
-  if [[ -z $s ]]; then
-    s=$(init_source_namespace "cutover_usage")
-  fi
-  cutover "$n" "$k1" "$o1" "$b"
   ;;
 cleanup)
   if [[ -z $n ]]; then
@@ -1171,27 +1166,32 @@ cleanup)
   fi
   cleanup "$n" "$k1" "$o1" "$b"
   ;;
-rollback)
-  if [[ -z $n ]]; then
-    echo "Ensure to use the -n flag to specify the namespace that contains the CRDs"
-    rollback_usage
+mask)
+  if [[ -z $o1 ]]; then
+    echo "Ensure to use the -o flag to specify the Operator Context you want to Mask"
+    mask_usage
     exit 1
   fi
-  if [[ -z $s ]]; then
-    s=$(init_source_namespace "rollback_usage")
-  fi
-  if [[ -z $d ]]; then
-    echo "Ensure to use the -d flag to specify the Destination KubeConfig"
-    rollback_usage
+  if [[ -z $g ]]; then
+    echo "Ensure to use the -g flag to specify the Gateway URL associated to the Dashboard connected to the specified Operator Context"
+    mask_usage
     exit 1
   fi
-  rollback "$n" "$s" "$d"
+  if [[ -z $k1 ]]; then
+    k1=$(init_source_namespace "mask_usage")
+  fi
+  mask "$k1" "$o1" "$g"
   ;;
-startup-operator)
-  if [[ -z $s ]]; then
-    s=$(init_source_namespace "startup_operator_usage")
+unmask)
+  if [[ -z $o1 ]]; then
+    echo "Ensure to use the -o flag to specify the Operator Context you want to Mask"
+    unmask_usage
+    exit 1
   fi
-  startup-operator "$s"
+  if [[ -z $k1 ]]; then
+    k1=$(init_source_namespace "mask_usage")
+  fi
+  unmask "$k1" "$o1" "$g"
   ;;
 *)
   echo "The command $action doesn't is available. Please ensure to specify a command as the first argument"
@@ -1202,12 +1202,3 @@ esac
 # ./crd-migration.sh migrate -n dev -k tyk tyk2 -o dev prod
 # ./crd-migration.sh cleanup -n dev -k tyk2 -o prod -b
 # ./crd-migration.sh cleanup -n dev -k tyk -o dev -b
-
-# echo "Action $action"
-# echo "Namespace $n"
-# echo "Kube Configs $k1 and $k2"
-# echo "Operator Context $o1 and $o2"
-# o="$(echo "$o2" | awk -F / '{print $1}')"
-# on="$(echo "$o2" | awk -F / '{print $2}')"
-# echo "Destination Operator Context $o and Namespace $on"
-# echo "Backup Directory $b"
