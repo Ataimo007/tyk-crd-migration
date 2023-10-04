@@ -266,36 +266,24 @@ backup_crds() {
 }
 
 migrate_crds() {
+  local crd
   switch_kubeconfig "$destination_kubeconfig"
 
-  for crd in $(kubectl get crd -o name | grep tyk); do
-    crd="${crd##*/}"
-    crd="${crd%%.*}"
-
-    if [[ ${scanned_crds[$crd]} -gt 0 && $crd != "operatorcontexts" ]]; then
-      echo "Migrating $(friendly_name "$crd")"
-      restore "$(get_crd_backup_dir "$crd")" "$(get_crd_live_dir "$crd")" "$crd"
-      echo "Migrated ${migrated_crds[$crd]} $(friendly_name "$crd")"
-    fi
-
+  for crd in portalapicatalogues apidescriptions securitypolicies apidefinitions subgraphs supergraphs portalconfigs; do
+    echo "Migrating $(friendly_name "$crd")"
+    restore "$(get_crd_backup_dir "$crd")" "$(get_crd_live_dir "$crd")" "$crd"
+    echo "Migrated ${migrated_crds[$crd]} $(friendly_name "$crd")"
   done
 
   switch_kubeconfig "$source_kubeconfig"
 }
 
 cleanup_crds() {
-  if [[ ${scanned_crds[securitypolicies]} -gt 0 ]]; then
-    clean_crds "securitypolicies" "$1"
-  fi
-
-  for crd in $(kubectl get crd -o name | grep tyk); do
-    crd="${crd##*/}"
-    crd="${crd%%.*}"
-
-    if [[ ${scanned_crds[$crd]} -gt 0 && $crd != "operatorcontexts" && $crd != "securitypolicies" ]]; then
-      clean_crds "$crd" "$1"
+  local crdname
+  for crdname in portalapicatalogues apidescriptions securitypolicies apidefinitions subgraphs supergraphs portalconfigs; do
+    if [[ ${scanned_crds[$crdname]} -gt 0 ]]; then
+      clean_crds "$crdname" "$1"
     fi
-
   done
 }
 
@@ -709,7 +697,7 @@ mask() {
 
   if [[ "$source_kubeconfig" != "" && "$source_operator_namespace" != "" ]]; then
     echo "Begin Operator Context Masking"
-    mask_operator_context "$source_operatorcontext" "$source_operatorcontext_namespace" "$3"
+    mask_operator_context "$3" "$4"
 
     echo "Operator Context Masking Complete"
   fi
@@ -721,16 +709,16 @@ unmask() {
 
   if [[ "$source_kubeconfig" != "" && "$source_operator_namespace" != "" ]]; then
     echo "Begin Unmasking the Operator Context"
-    unmask_operator_context "$source_operatorcontext" "$source_operatorcontext_namespace" "$3"
-
-    echo "Operator Context Unmasking Complete"
+    unmask_operator_context
   fi
 }
 
 unmask_operator_context() {
-  if masked=$(kubectl get configmap "$(get_masked_name "$1" "$2")" -o yaml --context "$current_context" 2>&1); then
+  if masked=$(kubectl get configmap "$(get_masked_name "$source_operatorcontext" "$source_operatorcontext_namespace")" -n "$source_operatorcontext_namespace" -o yaml --context "$current_context" 2>&1); then
     echo "The Operator Context is Masked, Unmasking...."
-    unregister_mask "$1" "$2"
+    unregister_mask
+    
+    echo "Operator Context Unmasking Complete"
   else
     echo "Operator Context haven't been Masked. Aborting Operation"
   fi
@@ -739,13 +727,13 @@ unmask_operator_context() {
 }
 
 mask_operator_context() {
-  if masked=$(kubectl get configmap "$(get_masked_name "$1" "$2")" -o yaml --context "$current_context" 2>&1); then
+  if masked=$(kubectl get configmap "$(get_masked_name "$source_operatorcontext" "$source_operatorcontext_namespace")" -n "$source_operatorcontext_namespace" -o yaml --context "$current_context" 2>&1); then
     echo "This Operator Context is Masked, Update Mask...."
-    mask_context "$1" "$2" "$3" >/dev/null
+    mask_context "$1" "$2" >/dev/null
     echo "Updated Operator Context Mask"
   else
     echo "This Operator Context haven't been Masked, Masking Operator Context"
-    register_mask "$1" "$2" "$3"
+    register_mask "$1" "$2"
   fi
 
   unset "$masked"
@@ -754,13 +742,13 @@ mask_operator_context() {
 unregister_mask() {
   local dashboard_url
 
-  unmask_context "$1" "$2"
+  unmask_context
   echo "Unmasked Operator Context"
 
-  kubectl delete configmap "$(get_masked_name "$1" "$2")" --context "$current_context" >/dev/null
+  kubectl delete configmap "$(get_masked_name "$source_operatorcontext" "$source_operatorcontext_namespace")" -n "$source_operatorcontext_namespace" --context "$current_context" >/dev/null
   echo "Unregistered Masked Operator"
 
-  if [[ $(kubectl get configmap | grep $masked_prefix) == "" ]]; then
+  if [[ $(kubectl get configmap -A --context "$current_context" | grep $masked_prefix) == "" ]]; then
     echo "No Masked Operator available, Removing API Mask"
     delete_mask
   fi
@@ -769,24 +757,27 @@ unregister_mask() {
 register_mask() {
   local dashboard_url
 
-  create_mask
+  if [[ $2 && ! $(is_operator_mask_applied) ]]; then
+    create_mask  
+  fi
+  
   if [[ $(is_operator_mask_applied) ]]; then
-    is_operator_mask_reachable "$3"
+    is_operator_mask_reachable "$1"
 
-    dashboard_url=$(mask_context "$1" "$2" "$3")
+    dashboard_url=$(mask_context "$1" "$2")
     echo "Masked Operator Context"
 
-    kubectl create configmap "$(get_masked_name "$1" "$2")" --from-literal=dashboard_url="$dashboard_url" --context "$current_context" >/dev/null
+    kubectl create configmap "$(get_masked_name "$source_operatorcontext" "$source_operatorcontext_namespace")" --from-literal=dashboard_url="$dashboard_url" -n "$source_operatorcontext_namespace" --context "$current_context" >/dev/null
     echo "Registered Masked Operator"
   fi
 }
 
 unmask_context() {
   local operator_context
-  operator_context=$(kubectl get operatorcontext "$1" -n "$2" -o yaml --context "$current_context")
-  dashboard_url=$(kubectl get configmap "$(get_masked_name "$1" "$2")" -o=jsonpath='{.data.dashboard_url}')
+  operator_context=$(kubectl get operatorcontext "$source_operatorcontext" -n "$source_operatorcontext_namespace" -o yaml --context "$current_context")
+  dashboard_url=$(kubectl get configmap "$(get_masked_name "$source_operatorcontext" "$source_operatorcontext_namespace")" -n "$source_operatorcontext_namespace" -o=jsonpath='{.data.dashboard_url}' --context "$current_context")
   operator_context=$(echo "$operator_context" | yq '.spec.env.url = '\""$dashboard_url"\" -)
-  echo "$operator_context" | kubectl apply -f - -n "$2" --context "$current_context" >/dev/null
+  echo "$operator_context" | kubectl apply -f - -n "$source_operatorcontext_namespace" --context "$current_context" >/dev/null
 }
 
 get_masked_name() {
@@ -795,19 +786,27 @@ get_masked_name() {
 
 mask_context() {
   local operator_context dashboard_url
-  operator_context=$(kubectl get operatorcontext "$1" -n "$2" -o yaml --context "$current_context")
+  operator_context=$(kubectl get operatorcontext "$source_operatorcontext" -n "$source_operatorcontext_namespace" -o yaml --context "$current_context")
   dashboard_url=$(echo "$operator_context" | yq '.spec.env.url' -)
-  operator_context=$(echo "$operator_context" | yq '.spec.env.url = '\""$3/operator-mask"\" -)
-  echo "$operator_context" | kubectl apply -f - -n "$2" --context "$current_context" >/dev/null
+
+  if [[ $2 ]]; then
+    operator_context=$(echo "$operator_context" | yq '.spec.env.url = '\""$1/operator-mask"\" -)  
+  else
+    operator_context=$(echo "$operator_context" | yq '.spec.env.url = '\""$1"\" -)
+  fi
+  
+  echo "$operator_context" | kubectl apply -f - -n "$source_operatorcontext_namespace" --context "$current_context" >/dev/null
   echo "$dashboard_url"
 }
 
 is_operator_mask_applied() {
-  if result=$(kubectl get tykapis tyk-crd-migration-operator-mask -o=custom-columns='name:.metadata.name,status:.status.latestTransaction.status' --no-headers --context "$current_context" 2>&1); then
-    name="$(echo "$result" | awk '{print $1}')"
-    status="$(echo "$result" | awk '{print $2}')"
+  local namespace status
+  namespace=$(find_k8s_object "apidefinitions" "tyk-crd-migration-operator-mask")
 
-    if [[ $name == "tyk-crd-migration-operator-mask" && $status == "Successful" ]]; then
+  if [[ $namespace != "" ]]; then
+    status=$(kubectl get tykapis tyk-crd-migration-operator-mask -n "$namespace" -o jsonpath="{.status.latestTransaction.status}" --context "$current_context")
+
+    if [[ $status == "Successful" ]]; then
       echo 1
       return
     fi
@@ -832,11 +831,13 @@ is_operator_mask_reachable() {
 }
 
 delete_mask() {
-  kubectl delete tykapis tyk-crd-migration-operator-mask --context "$current_context" >/dev/null
+  local namespace
+  namespace=$(find_k8s_object "apidefinitions" "tyk-crd-migration-operator-mask")
+  kubectl delete tykapis tyk-crd-migration-operator-mask -n "$namespace" --context "$current_context" >/dev/null
 }
 
 create_mask() {
-  kubectl create -f - --context "$current_context" &>/dev/null <<EOF
+  kubectl create -f - -n "$source_operatorcontext_namespace" --context "$current_context" &>/dev/null <<EOF
 apiVersion: tyk.tyk.io/v1alpha1
 kind: ApiDefinition
 metadata:
@@ -920,7 +921,7 @@ Description:
 The unmask command is to remove any available mask registered on an Operator Context. It's usage is followed after the mask Command to re-enable Dashbaord Communication.
 
 Usage: 
-crd-migration mask [ -k SOURCE_KUBECONFIG ] [ -o <NAMESPACE>/SOURCE_KUBECONFIG ] [ -g GATEWAY_URL ]
+crd-migration unmask [ -k SOURCE_KUBECONFIG ] [ -o <NAMESPACE>/SOURCE_KUBECONFIG ] [ -g GATEWAY_URL ]
 
 Flags:
 Below are the available flags
@@ -1011,7 +1012,7 @@ init_source_namespace() {
 
   context=$(kubectl config current-context)
   if [[ -z $context ]]; then
-    echo "A Source KubeConfig was not specified with the -s flag, and we couldn't use the Current KubeConfig as the Source"
+    echo "A Source KubeConfig was not specified with the -k flag, and we couldn't use the Current KubeConfig as the Source"
     $1
     exit 1
   fi
@@ -1061,11 +1062,16 @@ while (("$i" <= $((length + 1)))); do
       i=$((i + 1))
     fi
     ;;
-  -g)
+  -t)
+    t=1
+    shift
+    i=$((i + 1))
+    ;;
+  -u)
     shift
     i=$((i + 1))
     if ! [[ $1 == "" || $1 =~ -[a-zA-Z]{1}$ ]]; then
-      g=$1
+      u=$1
       shift
       i=$((i + 1))
     fi
@@ -1172,15 +1178,18 @@ mask)
     mask_usage
     exit 1
   fi
-  if [[ -z $g ]]; then
-    echo "Ensure to use the -g flag to specify the Gateway URL associated to the Dashboard connected to the specified Operator Context"
+  if [[ -z $u ]]; then
+    echo "Ensure to use the -u flag to specify the URL of your Mask for the specified Operator Context"
     mask_usage
     exit 1
   fi
   if [[ -z $k1 ]]; then
     k1=$(init_source_namespace "mask_usage")
   fi
-  mask "$k1" "$o1" "$g"
+  if [[ -z $t ]]; then
+    t=0
+  fi
+  mask "$k1" "$o1" "$u" "$t"
   ;;
 unmask)
   if [[ -z $o1 ]]; then
@@ -1189,9 +1198,9 @@ unmask)
     exit 1
   fi
   if [[ -z $k1 ]]; then
-    k1=$(init_source_namespace "mask_usage")
+    k1=$(init_source_namespace "unmask_usage")
   fi
-  unmask "$k1" "$o1" "$g"
+  unmask "$k1" "$o1"
   ;;
 *)
   echo "The command $action doesn't is available. Please ensure to specify a command as the first argument"
