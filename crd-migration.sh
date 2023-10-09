@@ -21,18 +21,33 @@ current_context=""
 
 get_backup_dir() {
   local dir
+  dir=$(get_backup_dir_only)
+
+  [ ! -d "$dir" ] && mkdir -p "$dir"
+  echo "$dir"
+}
+
+get_backup_dir_only() {
+  local dir
 
   if [[ $source_operatorcontext != "" && $source_operatorcontext_namespace != "" ]]; then
     dir="$backup_directory""$source_namespace"/"$source_operatorcontext"/
   else
     dir="$backup_directory""$source_namespace"/
   fi
+  
+  echo "$dir"
+}
+
+get_live_dir() {
+  local dir
+  dir=$(get_live_dir_only)
 
   [ ! -d "$dir" ] && mkdir -p "$dir"
   echo "$dir"
 }
 
-get_live_dir() {
+get_live_dir_only() {
   local dir
 
   if [[ $source_operatorcontext != "" && $source_operatorcontext_namespace != "" ]]; then
@@ -41,7 +56,6 @@ get_live_dir() {
     dir="$live_directory""$source_namespace"/
   fi
 
-  [ ! -d "$dir" ] && mkdir -p "$dir"
   echo "$dir"
 }
 
@@ -124,7 +138,7 @@ backup() {
       context_name="$(echo "$line" | awk '{print $2}')"
       context_namespace="$(echo "$line" | awk '{print $3}')"
 
-      if [[ $context_name == "$source_operatorcontext" && $context_namespace == "$source_operatorcontext_namespace" ]] || [[ $1 == "operatorcontexts" ]]; then
+      if [[ $context_name == "$source_operatorcontext" && $context_namespace == "$source_operatorcontext_namespace" ]] || [[ $1 == "operatorcontexts" ]] || [[ $1 == "portalconfigs" ]]; then
         kubectl get "${1}" "${name}" -n "$source_namespace" -o yaml --context "$current_context" >"${2}"/"${name}".yaml
         echo "Backed Up $(friendly_name "$1") $name"
         i=$((i + 1))
@@ -147,8 +161,10 @@ restore() {
       crd_context_name=$(echo "$crd" | yq '.spec.contextRef.name' -)
       crd_context_namespace=$(echo "$crd" | yq '.spec.contextRef.namespace' -)
 
-      if ! [[ $source_operatorcontext == "$crd_context_name" && $source_operatorcontext_namespace == "$crd_context_namespace" ]]; then
-        continue
+      if [[ $3 != "portalconfigs" ]]; then
+        if ! [[ $source_operatorcontext == "$crd_context_name" && $source_operatorcontext_namespace == "$crd_context_namespace" ]]; then
+          continue
+        fi
       fi
     fi
 
@@ -182,7 +198,7 @@ scan() {
       context_name="$(echo "$line" | awk '{print $2}')"
       context_namespace="$(echo "$line" | awk '{print $3}')"
 
-      if [[ $context_name == "$source_operatorcontext" && $context_namespace == "$source_operatorcontext_namespace" ]] || [[ $1 == "operatorcontexts" ]]; then
+      if [[ $context_name == "$source_operatorcontext" && $context_namespace == "$source_operatorcontext_namespace" ]] || [[ $1 == "operatorcontexts" ]] || [[ $1 == "portalconfigs" ]]; then
         i=$((i + 1))
       fi
     done <<<"$(kubectl get "$1" -n "$source_namespace" -o=custom-columns='name:.metadata.name,context-name:.spec.contextRef.name,context-namespace:.spec.contextRef.namespace' --no-headers --context "$current_context")"
@@ -622,18 +638,15 @@ check_source_kubeconfigs() {
 }
 
 switch_kubeconfig() {
-  # kubectl config use-context "$1" >/dev/null
   current_context="$1"
 }
 
 get_kubeconfig() {
-  # kubectl config current-context
   echo "$current_context"
 }
 
 check_kubeconfig() {
   for config in $(kubectl config get-contexts -o name); do
-    # echo "The Kube Config for $config"
     if [ "$1" == "$config" ]; then
       echo 1
       return
@@ -655,6 +668,7 @@ migrate() {
     if [ "$(are_crds_available)" ]; then
       echo "Begin Migration"
 
+      clean_previous_dir
       backup_namespace
       migrate_namespace
       report_migration
@@ -665,6 +679,14 @@ migrate() {
   else
     echo "Aborting Operation"
   fi
+}
+
+clean_previous_dir() {
+  [ -d "$(get_backup_dir_only)" ] && rm -r "$(get_backup_dir_only)" &>/dev/null
+  [ -d "$(get_backup_dir_only)" ] && rm -d "$(get_backup_dir_only)" &>/dev/null
+
+  [ -d "$(get_live_dir_only)" ] && rm -r "$(get_live_dir_only)" &>/dev/null
+  [ -d "$(get_live_dir_only)" ] && rm -d "$(get_live_dir_only)" &>/dev/null
 }
 
 cleanup() {
@@ -717,7 +739,7 @@ unmask_operator_context() {
   if masked=$(kubectl get configmap "$(get_masked_name "$source_operatorcontext" "$source_operatorcontext_namespace")" -n "$source_operatorcontext_namespace" -o yaml --context "$current_context" 2>&1); then
     echo "The Operator Context is Masked, Unmasking...."
     unregister_mask
-    
+
     echo "Operator Context Unmasking Complete"
   else
     echo "Operator Context haven't been Masked. Aborting Operation"
@@ -750,17 +772,20 @@ unregister_mask() {
 
   if [[ $(kubectl get configmap -A --context "$current_context" | grep $masked_prefix) == "" ]]; then
     echo "No Masked Operator available, Removing API Mask"
-    delete_mask
+
+    if [[ $(is_operator_mask_applied) == 1 ]]; then
+      delete_mask
+    fi
   fi
 }
 
 register_mask() {
   local dashboard_url
 
-  if [[ $2 && ! $(is_operator_mask_applied) ]]; then
-    create_mask  
+  if [[ $2 == 1 && $(is_operator_mask_applied) == 0 ]]; then
+    create_mask
   fi
-  
+
   if [[ $(is_operator_mask_applied) ]]; then
     is_operator_mask_reachable "$1"
 
@@ -790,11 +815,11 @@ mask_context() {
   dashboard_url=$(echo "$operator_context" | yq '.spec.env.url' -)
 
   if [[ $2 ]]; then
-    operator_context=$(echo "$operator_context" | yq '.spec.env.url = '\""$1/operator-mask"\" -)  
+    operator_context=$(echo "$operator_context" | yq '.spec.env.url = '\""$1/operator-mask"\" -)
   else
     operator_context=$(echo "$operator_context" | yq '.spec.env.url = '\""$1"\" -)
   fi
-  
+
   echo "$operator_context" | kubectl apply -f - -n "$source_operatorcontext_namespace" --context "$current_context" >/dev/null
   echo "$dashboard_url"
 }
@@ -891,6 +916,76 @@ EOF
   echo "Created API Mask"
 }
 
+get_mask() {
+  cat <<EOF
+apiVersion: tyk.tyk.io/v1alpha1
+kind: ApiDefinition
+metadata:
+  name: tyk-crd-migration-operator-mask
+spec:
+  name: "Tyk CRD Migration Operator Mask"
+  active: true
+  use_keyless: true
+  proxy:
+    target_url: http://httpbin.org
+    listen_path: /operator-mask
+    strip_listen_path: true
+  version_data:
+    default_version: Default
+    not_versioned: true
+    versions:
+      Default:
+        name: Default
+        use_extended_paths: true
+        paths:
+          black_list: []
+          ignored: []
+          white_list: []
+        extended_paths:
+          ignored:
+            - ignore_case: false
+              method_actions:
+                GET:
+                  action: "reply"
+                  code: 200
+                  data: '{"x-agent": "tyk-crd-migration", "x-action": "mask", "message": "Masking Operator Functionality"}'
+                  headers: {"Content-Type": "application/json"}
+                POST:
+                  action: "reply"
+                  code: 200
+                  data: '{"x-agent": "tyk-crd-migration", "x-action": "mask", "message": "Masking Operator Functionality"}'
+                  headers: {"Content-Type": "application/json"}
+                DELETE:
+                  action: "reply"
+                  code: 200
+                  data: '{"x-agent": "tyk-crd-migration", "x-action": "mask", "message": "Masking Operator Functionality"}'
+                  headers: {"Content-Type": "application/json"}
+                PUT:
+                  action: "reply"
+                  code: 200
+                  data: '{"x-agent": "tyk-crd-migration", "x-action": "mask", "message": "Masking Operator Functionality"}'
+                  headers: {"Content-Type": "application/json"}
+              path: /*
+EOF
+}
+
+get_mask_usage() {
+  cat <<EOF
+Command:
+get-mask
+
+Description:
+The get-mask command is used to retrieve an API Definition CRD for manual creation of an API on Tyk for Masking an Operator Context.  
+
+Usage: 
+crd-migration get-mask
+
+Examples:
+./crd-migration.sh get-mask
+
+EOF
+}
+
 mask_usage() {
   cat <<EOF
 Command:
@@ -900,15 +995,20 @@ Description:
 The mask command is to mask the functionality of the Operator for a specify Operator Context. This is used so you can carry out operations on the CRDs without alerting the Dashboard on reconciliation.
 
 Usage: 
-crd-migration mask [ -k SOURCE_KUBECONFIG ] [ -o <NAMESPACE>/SOURCE_KUBECONFIG ] [ -g GATEWAY_URL ]
+crd-migration mask [ -k SOURCE_KUBECONFIG ] [ -o <NAMESPACE>/SOURCE_KUBECONFIG ] [ -u MASK_URL ] [ -t TYK_MASKING ]
 
 Flags:
 Below are the available flags
 
-  -k : KUBECONFIG .................. The Name of the KubeConfig for the Kubernetes Cluster. If not specified, defaults to the Current KubeConfig Context
+  -k : KUBECONFIG .................. The Name of the KubeConfig for the Kubernetes Cluster. If not specified, defaults to the Current KubeConfig Context.
   -o : OPERATOR_CONTEXT ............ The Name of the Tyk Operator Context that should be Masked. For example -o operator-context.
-  -g : GATEWAY_URL ................. The URL to the Gateway of the Dashboard associated to the specified Operator Context.
+  -u : MASK_URL .................... The URL of an API you want to use to Mask the specified Operator Context. When Tyk Masking is enabled, this should be your Gateway URL.
+  -t : TYK_MASKING ................. An indicator flag to consent to the automatic creation of an API on Tyk for Masking the Operator Context.
   
+Examples:
+./crd-migration.sh mask -k tyk -o tyk-dev -u https://httpbin.org/status/200
+./crd-migration.sh mask -k tyk -o tyk-dev -u https://gateway.ataimo.com -t
+
 EOF
 }
 
@@ -929,6 +1029,9 @@ Below are the available flags
   -k : KUBECONFIG .................. The Name of the KubeConfig for the Kubernetes Cluster. If not specified, defaults to the Current KubeConfig Context
   -o : OPERATOR_CONTEXT ............ The Name of the Tyk Operator Context that should be Unmasked. For example -o operator-context.
   
+Examples:
+./crd-migration.sh unmask -k tyk -o tyk-dev
+
 EOF
 }
 
@@ -936,7 +1039,7 @@ cleanup_usage() {
   cat <<EOF
 
 Command:
-cleanup (Shared and Isolated Dashboard)
+cleanup
 
 Description:
 The cleanup command is used to delete CRDs from a namespace. This command can be executed after a successful Migration of your CRDs and if you no longer need the previous CRDs again.
@@ -963,7 +1066,7 @@ migrate_usage() {
   cat <<EOF
 
 Command:
-migrate (Shared and Isolated Dashboard)
+migrate
 
 Description:
 The migrate command is used to automate the transfer of CRDs ( APIs, Policies, etc ) from the Source Kubernetes Cluster to the Destinaion Kubernetes Cluster.
@@ -997,12 +1100,13 @@ Usage:
 crd-migration COMMAND -flags [OPTIONs]*
   
 Cmmands:
- Below are the available commands:
+Below are the available commands:
 
   migrate .......................... To Migrate CRDs across Kubenetes Clusters
-  cleanup .......................... To Clean Up CRDs from a Namespace without deleting them from the Dashboard (DB)
-  wipeoff .......................... To Clean Up CRDs from a Namespace and the Dashboard (DB)
-  mask-operator .................... To Mask the Operator Functionality preventing operations on the Dashboard
+  cleanup .......................... To Clean Up CRDs in a Kubenetes Clusters
+  mask ............................. To Mask the Functionality of the Operator for a specify Operator Context
+  unmask ........................... To Restore the Operator's Functionality on an Operator Context
+  get-mask ......................... To get an API Definition for manual creation of an Operator's Mask on Tyk
 
 EOF
 }
@@ -1040,10 +1144,6 @@ start() {
   execute "get ${a} -n ${b} -o=custom-columns='name:.metadata.name,context-name:.spec.contextRef.name,context-namespace:.spec.contextRef.namespace'"
 }
 
-# scan_crds
-# start
-# exit
-
 action="$1"
 shift
 
@@ -1064,6 +1164,11 @@ while (("$i" <= $((length + 1)))); do
     ;;
   -t)
     t=1
+    shift
+    i=$((i + 1))
+    ;;
+  -h)
+    h=1
     shift
     i=$((i + 1))
     ;;
@@ -1122,6 +1227,11 @@ done
 
 case $action in
 migrate)
+  if [[ $h ]]; then
+    migrate_usage
+    exit
+  fi
+
   if [[ -z $n ]]; then
     echo "Ensure to use the -n flag to specify the namespace that contains the CRDs"
     migrate_usage
@@ -1158,6 +1268,11 @@ migrate)
   migrate "$n" "$k1" "$k2" "$o1" "$o2"
   ;;
 cleanup)
+  if [[ $h ]]; then
+    cleanup_usage
+    exit
+  fi
+
   if [[ -z $n ]]; then
     echo "Ensure to use the -n flag to specify the namespace that contains the CRDs"
     cleanup_usage
@@ -1173,6 +1288,11 @@ cleanup)
   cleanup "$n" "$k1" "$o1" "$b"
   ;;
 mask)
+  if [[ $h ]]; then
+    mask_usage
+    exit
+  fi
+
   if [[ -z $o1 ]]; then
     echo "Ensure to use the -o flag to specify the Operator Context you want to Mask"
     mask_usage
@@ -1192,6 +1312,11 @@ mask)
   mask "$k1" "$o1" "$u" "$t"
   ;;
 unmask)
+  if [[ $h ]]; then
+    unmask_usage
+    exit
+  fi
+
   if [[ -z $o1 ]]; then
     echo "Ensure to use the -o flag to specify the Operator Context you want to Mask"
     unmask_usage
@@ -1201,6 +1326,14 @@ unmask)
     k1=$(init_source_namespace "unmask_usage")
   fi
   unmask "$k1" "$o1"
+  ;;
+get-mask)
+  if [[ $h ]]; then
+    get_mask_usage
+    exit
+  fi
+
+  get_mask
   ;;
 *)
   echo "The command $action doesn't is available. Please ensure to specify a command as the first argument"
