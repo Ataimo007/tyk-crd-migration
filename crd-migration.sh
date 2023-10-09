@@ -285,7 +285,7 @@ migrate_crds() {
   local crd
   switch_kubeconfig "$destination_kubeconfig"
 
-  for crd in portalapicatalogues apidescriptions securitypolicies apidefinitions subgraphs supergraphs portalconfigs; do
+  for crd in portalconfigs subgraphs supergraphs apidefinitions securitypolicies apidescriptions portalapicatalogues; do
     echo "Migrating $(friendly_name "$crd")"
     restore "$(get_crd_backup_dir "$crd")" "$(get_crd_live_dir "$crd")" "$crd"
     echo "Migrated ${migrated_crds[$crd]} $(friendly_name "$crd")"
@@ -296,7 +296,8 @@ migrate_crds() {
 
 cleanup_crds() {
   local crdname
-  for crdname in portalapicatalogues apidescriptions securitypolicies apidefinitions subgraphs supergraphs portalconfigs; do
+
+  for crdname in portalapicatalogues apidescriptions securitypolicies apidefinitions supergraphs subgraphs portalconfigs; do
     if [[ ${scanned_crds[$crdname]} -gt 0 ]]; then
       clean_crds "$crdname" "$1"
     fi
