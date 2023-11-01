@@ -171,9 +171,6 @@ restore() {
     if [ "$3" == "apidefinitions" ]; then
       crd=$(indemnify_api "$crd")
     fi
-    if [ "$3" == "securitypolicies" ]; then
-      crd=$(indemnify_policy "$crd")
-    fi
 
     crd=$(prepare "$crd")
     store "$crd" "$2/$file"
@@ -573,6 +570,7 @@ indemnify_api() {
   echo "$crd"
 }
 
+# Wrong Logic from Documentation
 indemnify_policy() {
   local pol_id crd=$1
   pol_id=$(echo "$crd" | yq '.spec._id' -)
@@ -772,7 +770,7 @@ unregister_mask() {
   echo "Unregistered Masked Operator"
 
   if [[ $(kubectl get configmap -A --context "$current_context" | grep $masked_prefix) == "" ]]; then
-    echo "No Masked Operator available, Removing API Mask"
+    echo "No Masked Operator available, Removing Cluster's API Mask"
 
     if [[ $(is_operator_mask_applied) == 1 ]]; then
       delete_mask
@@ -827,10 +825,10 @@ mask_context() {
 
 is_operator_mask_applied() {
   local namespace status
-  namespace=$(find_k8s_object "apidefinitions" "tyk-crd-migration-operator-mask")
+  namespace=$(find_k8s_object "apidefinitions" "$source_kubeconfig-crd-migration-operator-mask")
 
   if [[ $namespace != "" ]]; then
-    status=$(kubectl get tykapis tyk-crd-migration-operator-mask -n "$namespace" -o jsonpath="{.status.latestTransaction.status}" --context "$current_context")
+    status=$(kubectl get tykapis "$source_kubeconfig"-crd-migration-operator-mask -n "$namespace" -o jsonpath="{.status.latestTransaction.status}" --context "$current_context")
 
     if [[ $status == "Successful" ]]; then
       echo 1
@@ -858,8 +856,8 @@ is_operator_mask_reachable() {
 
 delete_mask() {
   local namespace
-  namespace=$(find_k8s_object "apidefinitions" "tyk-crd-migration-operator-mask")
-  kubectl delete tykapis tyk-crd-migration-operator-mask -n "$namespace" --context "$current_context" >/dev/null
+  namespace=$(find_k8s_object "apidefinitions" "$source_kubeconfig-crd-migration-operator-mask")
+  kubectl delete tykapis "$source_kubeconfig"-crd-migration-operator-mask -n "$namespace" --context "$current_context" >/dev/null
 }
 
 create_mask() {
@@ -867,9 +865,9 @@ create_mask() {
 apiVersion: tyk.tyk.io/v1alpha1
 kind: ApiDefinition
 metadata:
-  name: tyk-crd-migration-operator-mask
+  name: $source_kubeconfig-crd-migration-operator-mask
 spec:
-  name: "Tyk CRD Migration Operator Mask"
+  name: "$source_kubeconfig's CRD Migration Operator Mask"
   active: true
   use_keyless: true
   proxy:
@@ -1157,7 +1155,7 @@ while (("$i" <= $((length + 1)))); do
     b="-"
     shift
     i=$((i + 1))
-    if ! [[ $1 == "" || $1 =~ -[a-zA-Z]{1}$ ]]; then
+    if ! [[ $1 == "" || $1 =~ ^-[a-zA-Z]{1}$ ]]; then
       b=$1
       shift
       i=$((i + 1))
@@ -1176,7 +1174,7 @@ while (("$i" <= $((length + 1)))); do
   -u)
     shift
     i=$((i + 1))
-    if ! [[ $1 == "" || $1 =~ -[a-zA-Z]{1}$ ]]; then
+    if ! [[ $1 == "" || $1 =~ ^-[a-zA-Z]{1}$ ]]; then
       u=$1
       shift
       i=$((i + 1))
@@ -1185,7 +1183,7 @@ while (("$i" <= $((length + 1)))); do
   -n)
     shift
     i=$((i + 1))
-    if ! [[ $1 == "" || $1 =~ -[a-zA-Z]{1}$ ]]; then
+    if ! [[ $1 == "" || $1 =~ ^-[a-zA-Z]{1}$ ]]; then
       n=$1
       shift
       i=$((i + 1))
@@ -1194,12 +1192,12 @@ while (("$i" <= $((length + 1)))); do
   -k)
     shift
     i=$((i + 1))
-    if ! [[ $1 == "" || $1 =~ -[a-zA-Z]{1}$ ]]; then
+    if ! [[ $1 == "" || $1 =~ ^-[a-zA-Z]{1}$ ]]; then
       k1=$1
       shift
       i=$((i + 1))
     fi
-    if ! [[ $1 == "" || $1 =~ -[a-zA-Z]{1}$ ]]; then
+    if ! [[ $1 == "" || $1 =~ ^-[a-zA-Z]{1}$ ]]; then
       k2=$1
       shift
       i=$((i + 1))
@@ -1208,12 +1206,12 @@ while (("$i" <= $((length + 1)))); do
   -o)
     shift
     i=$((i + 1))
-    if ! [[ $1 == "" || $1 =~ -[a-zA-Z]{1}$ ]]; then
+    if ! [[ $1 == "" || $1 =~ ^-[a-zA-Z]{1}$ ]]; then
       o1=$1
       shift
       i=$((i + 1))
     fi
-    if ! [[ $1 == "" || $1 =~ -[a-zA-Z]{1}$ ]]; then
+    if ! [[ $1 == "" || $1 =~ ^-[a-zA-Z]{1}$ ]]; then
       o2=$1
       shift
       i=$((i + 1))
