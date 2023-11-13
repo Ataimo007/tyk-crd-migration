@@ -171,16 +171,41 @@ restore() {
     if [ "$3" == "apidefinitions" ]; then
       crd=$(indemnify_api "$crd")
     fi
+    if [ "$3" == "securitypolicies" ]; then
+      crd=$(indemnify_policy "$crd")
+    fi
 
     crd=$(prepare "$crd")
-    store "$crd" "$2/$file"
     apply "$crd"
+
+    if [ "$3" == "securitypolicies" ]; then
+      crd=$(cat "$1"/"$file")
+      crd=$(prepare "$crd")
+      crd=$(augment_id "$crd")
+    fi
+
+    store "$crd" "$2/$file"
 
     echo "Restored $(friendly_name "$3") $file"
     i=$((i + 1))
   done
 
   migrated_crds["$3"]=$i
+}
+
+augment_id()
+{
+  local name kind id gotten_crd crd=$1
+  name=$(echo "$crd" | yq '.metadata.name' -)
+  kind=$(echo "$crd" | yq '.kind' -)
+  id=$(echo "$crd" | yq '.spec.id' -)
+
+  gotten_crd=$(kubectl get "$kind" "$name" -n "$source_namespace" -o yaml --context "$current_context")
+  gotten_crd=$(echo "$gotten_crd" | yq '.spec.id = '\""$id"\" -)
+  crd=$(echo "$crd" | yq '.spec.id = '\""$id"\" -)
+
+  apply "$gotten_crd"
+  echo "$crd"
 }
 
 scan() {
